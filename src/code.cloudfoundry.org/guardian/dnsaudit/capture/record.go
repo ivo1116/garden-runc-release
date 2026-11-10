@@ -2,6 +2,7 @@ package capture
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"time"
 
@@ -16,6 +17,9 @@ const (
 	RecordLength       = bpf.RecordLength
 )
 
+// ErrInvalidRecord is returned for a ring buffer record that can't be parsed.
+var ErrInvalidRecord = errors.New("invalid record")
+
 type Record struct {
 	CgroupID    uint64
 	TimestampNs uint64
@@ -26,11 +30,11 @@ type Record struct {
 
 func ParseRecord(raw []byte) (Record, error) {
 	if len(raw) < recordHeaderLength {
-		return Record{}, fmt.Errorf("record too short: %d bytes", len(raw))
+		return Record{}, fmt.Errorf("%w: too short: %d bytes", ErrInvalidRecord, len(raw))
 	}
 	captureLen := int(binary.LittleEndian.Uint16(raw[20:22]))
 	if captureLen > MaxCaptureLength || recordHeaderLength+captureLen > len(raw) {
-		return Record{}, fmt.Errorf("invalid capture length %d", captureLen)
+		return Record{}, fmt.Errorf("%w: capture length %d", ErrInvalidRecord, captureLen)
 	}
 	data := make([]byte, captureLen)
 	copy(data, raw[recordHeaderLength:recordHeaderLength+captureLen])

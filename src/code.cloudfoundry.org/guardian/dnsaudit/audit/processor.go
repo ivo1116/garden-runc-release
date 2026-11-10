@@ -51,17 +51,19 @@ type Response struct {
 }
 
 type Options struct {
-	DedupWindow      time.Duration
-	RatePerSecond    int
-	Burst            int
-	ExcludeDomains   []string
-	CaptureResponses bool
-	ResponseTimeout  time.Duration
-	MaxDedupBytes    int
-	MaxPending       int
-	MaxSuffixes      int
-	TopSuffixes      int
-	Host             Host
+	DedupWindow       time.Duration
+	RatePerSecond     int
+	Burst             int
+	CellRatePerSecond int
+	CellBurst         int
+	ExcludeDomains    []string
+	CaptureResponses  bool
+	ResponseTimeout   time.Duration
+	MaxDedupBytes     int
+	MaxPending        int
+	MaxSuffixes       int
+	TopSuffixes       int
+	Host              Host
 }
 
 type pendingKey struct {
@@ -106,7 +108,7 @@ func NewProcessor(opts Options, resolver Resolver, logger lager.Logger, now func
 		Counters:  &Counters{},
 		excluder:  NewExcluder(opts.ExcludeDomains),
 		deduper:   NewDeduper(opts.DedupWindow, opts.MaxDedupBytes),
-		limiter:   NewRateLimiter(opts.RatePerSecond, opts.Burst, opts.MaxSuffixes, opts.TopSuffixes),
+		limiter:   NewRateLimiter(opts.RatePerSecond, opts.Burst, opts.CellRatePerSecond, opts.CellBurst, opts.MaxSuffixes, opts.TopSuffixes),
 		pending:   map[pendingKey]*pendingQuery{},
 		lastPrune: now(),
 	}
@@ -163,10 +165,14 @@ func (p *Processor) handleQuery(ev Event, msg decode.Message) {
 		p.Counters.QueriesSuppressed.Add(1)
 		return
 	}
-	if !p.limiter.Allow(container, msg.Name, now) {
+	if allowed, byCell := p.limiter.Allow(container, msg.Name, now); !allowed {
 		p.Counters.RateLimited.Add(1)
+		if byCell {
+			p.Counters.RateLimitedCell.Add(1)
+		}
 		return
 	}
+	p.deduper.Logged(container, msg.Name, msg.Type, now)
 
 	query := Query{
 		Name:     msg.Name,
@@ -268,12 +274,16 @@ func (p *Processor) summarise(now time.Time) {
 		})
 	}
 	for _, d := range p.limiter.Drain() {
-		p.logger.Info("dns-rate-limited", lager.Data{
+		data := lager.Data{
 			"container":    d.Container,
 			"host":         p.opts.Host,
 			"dropped":      d.Dropped,
 			"top_suffixes": d.TopSuffixes,
-		})
+		}
+		if d.DroppedByCellLimit > 0 {
+			data["dropped_by_cell_limit"] = d.DroppedByCellLimit
+		}
+		p.logger.Info("dns-rate-limited", data)
 	}
 	p.limiter.Prune(now)
 }

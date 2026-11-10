@@ -25,6 +25,7 @@ describe 'dns-audit' do
         'properties' => [],
         'dedup_window_seconds' => 60,
         'max_logs_per_second_per_container' => 10,
+        'max_logs_per_second' => 100,
         'exclude_domains' => [],
         'capture_responses' => false,
         'ring_buffer_size_kb' => 4096,
@@ -39,6 +40,7 @@ describe 'dns-audit' do
             'properties' => ['network.app_id', 'app_name'],
             'dedup_window_seconds' => 30,
             'max_logs_per_second_per_container' => 5,
+            'max_logs_per_second' => 50,
             'exclude_domains' => ['internal.example'],
             'capture_responses' => true,
             'ring_buffer_size_kb' => 8192,
@@ -53,6 +55,7 @@ describe 'dns-audit' do
           'properties' => ['network.app_id', 'app_name'],
           'dedup_window_seconds' => 30,
           'max_logs_per_second_per_container' => 5,
+          'max_logs_per_second' => 50,
           'exclude_domains' => ['internal.example'],
           'capture_responses' => true,
           'ring_buffer_size_kb' => 8192,
@@ -64,6 +67,7 @@ describe 'dns-audit' do
     [
       ['dedup_window_seconds', 0, /dedup_window_seconds/],
       ['max_logs_per_second_per_container', -1, /max_logs_per_second_per_container/],
+      ['max_logs_per_second', 0, /max_logs_per_second must/],
       ['ring_buffer_size_kb', 1000, /ring_buffer_size_kb/],
     ].each do |key, value, message|
       context "with an invalid #{key}" do

@@ -13,6 +13,7 @@ const (
 	DefaultPropertyCacheTTLSeconds = 60
 	DefaultMetricsIntervalSeconds  = 30
 	DefaultResponseTimeoutMillis   = 2000
+	DefaultMaxLogsPerSecond        = 100
 )
 
 type Config struct {
@@ -26,6 +27,7 @@ type Config struct {
 	Properties                   []string `json:"properties"`
 	DedupWindowSeconds           int      `json:"dedup_window_seconds"`
 	MaxLogsPerSecondPerContainer int      `json:"max_logs_per_second_per_container"`
+	MaxLogsPerSecond             int      `json:"max_logs_per_second"`
 	ExcludeDomains               []string `json:"exclude_domains"`
 	CaptureResponses             bool     `json:"capture_responses"`
 	ResponseTimeoutMillis        int      `json:"response_timeout_millis"`
@@ -65,6 +67,9 @@ func (c *Config) applyDefaults() {
 	if c.ResponseTimeoutMillis == 0 {
 		c.ResponseTimeoutMillis = DefaultResponseTimeoutMillis
 	}
+	if c.MaxLogsPerSecond == 0 {
+		c.MaxLogsPerSecond = DefaultMaxLogsPerSecond
+	}
 	if c.GardenNetwork == "" {
 		c.GardenNetwork = "unix"
 	}
@@ -85,6 +90,8 @@ func (c Config) Validate() error {
 		return errors.New("dedup_window_seconds must be greater than 0")
 	case c.MaxLogsPerSecondPerContainer <= 0:
 		return errors.New("max_logs_per_second_per_container must be greater than 0")
+	case c.MaxLogsPerSecond < 0:
+		return errors.New("max_logs_per_second must not be negative")
 	case c.ResponseTimeoutMillis < 0:
 		return errors.New("response_timeout_millis must not be negative")
 	case c.PropertyCacheTTLSeconds < 0:

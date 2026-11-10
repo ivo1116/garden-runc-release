@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -27,6 +28,15 @@ const (
 	topSuffixes   = 10
 	burstFactor   = 5
 	recordQueue   = 4096
+
+	// After a read error other than an invalid record, wait this long before
+	// reading again, and log read errors at most once per readErrorLogInterval.
+	readErrorBackoff     = 100 * time.Millisecond
+	readErrorLogInterval = time.Minute
+
+	// On shutdown, records written before the programs were detached are read
+	// for this long. The reader polls the ring buffer every 50 ms.
+	shutdownDrain = 200 * time.Millisecond
 )
 
 func main() {
@@ -65,19 +75,25 @@ func run(cfg config.Config, logger lager.Logger) error {
 	source := identity.NewGardenSource(cfg.GardenNetwork, cfg.GardenAddress, gardenTimeout, logger.Session("garden"))
 	resolver := identity.NewResolver(cgroups, source, cfg.Properties,
 		time.Duration(cfg.PropertyCacheTTLSeconds)*time.Second, time.Now, logger.Session("resolver"))
+	resolver.Refresh()
+	stopResolver := make(chan struct{})
+	defer close(stopResolver)
+	go resolver.Run(stopResolver)
 
 	processor := audit.NewProcessor(audit.Options{
-		DedupWindow:      time.Duration(cfg.DedupWindowSeconds) * time.Second,
-		RatePerSecond:    cfg.MaxLogsPerSecondPerContainer,
-		Burst:            burstFactor * cfg.MaxLogsPerSecondPerContainer,
-		ExcludeDomains:   cfg.ExcludeDomains,
-		CaptureResponses: cfg.CaptureResponses,
-		ResponseTimeout:  time.Duration(cfg.ResponseTimeoutMillis) * time.Millisecond,
-		MaxDedupBytes:    maxDedupBytes,
-		MaxPending:       maxPending,
-		MaxSuffixes:      maxSuffixes,
-		TopSuffixes:      topSuffixes,
-		Host:             audit.Host{IP: cfg.HostIP, ID: cfg.HostID},
+		DedupWindow:       time.Duration(cfg.DedupWindowSeconds) * time.Second,
+		RatePerSecond:     cfg.MaxLogsPerSecondPerContainer,
+		Burst:             burstFactor * cfg.MaxLogsPerSecondPerContainer,
+		CellRatePerSecond: cfg.MaxLogsPerSecond,
+		CellBurst:         burstFactor * cfg.MaxLogsPerSecond,
+		ExcludeDomains:    cfg.ExcludeDomains,
+		CaptureResponses:  cfg.CaptureResponses,
+		ResponseTimeout:   time.Duration(cfg.ResponseTimeoutMillis) * time.Millisecond,
+		MaxDedupBytes:     maxDedupBytes,
+		MaxPending:        maxPending,
+		MaxSuffixes:       maxSuffixes,
+		TopSuffixes:       topSuffixes,
+		Host:              audit.Host{IP: cfg.HostIP, ID: cfg.HostID},
 	}, resolver, dnsLogger, time.Now)
 
 	c, err := capture.Open(cfg.CgroupRoot, cfg.RingBufferSizeKB*1024, cfg.CaptureResponses)
@@ -94,19 +110,26 @@ func run(cfg config.Config, logger lager.Logger) error {
 
 	clock := capture.NewClock(capture.Monotonic, time.Now)
 	records := make(chan capture.Record, recordQueue)
-	readErrors := make(chan error, 1)
+	closed := make(chan error, 1)
+	var readErrors atomic.Uint64
 	go func() {
+		var lastLogged time.Time
 		for {
 			record, ok, err := c.Read()
-			if err != nil {
-				if errors.Is(err, os.ErrClosed) {
-					readErrors <- err
-					return
+			switch {
+			case errors.Is(err, os.ErrClosed):
+				closed <- err
+				return
+			case err != nil:
+				count := readErrors.Add(1)
+				if time.Since(lastLogged) >= readErrorLogInterval {
+					lastLogged = time.Now()
+					logger.Error("read-record", err, lager.Data{"read_errors": count})
 				}
-				logger.Error("read-record", err)
-				continue
-			}
-			if ok {
+				if !errors.Is(err, capture.ErrInvalidRecord) {
+					time.Sleep(readErrorBackoff)
+				}
+			case ok:
 				records <- record
 			}
 		}
@@ -120,7 +143,7 @@ func run(cfg config.Config, logger lager.Logger) error {
 	defer metricsTicker.Stop()
 
 	report := func() {
-		reportMetrics(logger, processor, resolver, c)
+		reportMetrics(logger, processor, resolver, c, readErrors.Load())
 	}
 
 	for {
@@ -132,19 +155,31 @@ func run(cfg config.Config, logger lager.Logger) error {
 		case <-metricsTicker.C:
 			clock.Resync()
 			report()
-		case err := <-readErrors:
+		case err := <-closed:
 			return fmt.Errorf("ring buffer closed: %w", err)
 		case sig := <-signals:
 			logger.Info("stopping", lager.Data{"signal": sig.String()})
-			if err := c.Close(); err != nil {
+			if err := c.Detach(); err != nil {
 				logger.Error("detach", err)
 			}
-			for drained := false; !drained; {
+			drained := time.After(shutdownDrain)
+			for draining := true; draining; {
+				select {
+				case record := <-records:
+					processor.Handle(record.Event(clock))
+				case <-drained:
+					draining = false
+				}
+			}
+			if err := c.Close(); err != nil {
+				logger.Error("close", err)
+			}
+			for draining := true; draining; {
 				select {
 				case record := <-records:
 					processor.Handle(record.Event(clock))
 				default:
-					drained = true
+					draining = false
 				}
 			}
 			processor.Flush()
@@ -155,10 +190,12 @@ func run(cfg config.Config, logger lager.Logger) error {
 	}
 }
 
-func reportMetrics(logger lager.Logger, processor *audit.Processor, resolver *identity.Resolver, c *capture.Capture) {
+func reportMetrics(logger lager.Logger, processor *audit.Processor, resolver *identity.Resolver, c *capture.Capture, readErrors uint64) {
 	values := processor.Counters.Values()
 	values["garden_errors"] = resolver.GardenErrors.Load()
 	values["unknown_cgroups"] = resolver.UnknownCgroups.Load()
+	values["missing_properties"] = resolver.MissingProperties.Load()
+	values["read_errors"] = readErrors
 	values["pending_responses"] = uint64(processor.PendingLen())
 	if stats, err := c.Stats(); err == nil {
 		values["kernel_events"] = stats.Events

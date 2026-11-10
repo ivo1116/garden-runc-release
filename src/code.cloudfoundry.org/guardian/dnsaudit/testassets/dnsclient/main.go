@@ -1,3 +1,5 @@
+//go:build linux
+
 // dnsclient sends one DNS query and waits briefly for the response. It is
 // started inside a test cgroup by the integration tests.
 package main

@@ -1,3 +1,5 @@
+//go:build !windows
+
 package identity_test
 
 import (
@@ -7,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"code.cloudfoundry.org/garden"
 	"code.cloudfoundry.org/guardian/dnsaudit/identity"
 	"code.cloudfoundry.org/guardian/dnsaudit/identity/fakes"
 	"code.cloudfoundry.org/lager/v3/lagertest"
@@ -107,6 +110,8 @@ var _ = Describe("Resolver", func() {
 	var (
 		root     string
 		clock    *fakeClock
+		now      func() time.Time
+		ttl      time.Duration
 		source   *fakes.PropertySource
 		resolver *identity.Resolver
 		keys     []string
@@ -117,6 +122,8 @@ var _ = Describe("Resolver", func() {
 	BeforeEach(func() {
 		root = GinkgoT().TempDir()
 		clock = &fakeClock{now: time.Unix(1000, 0)}
+		now = clock.Now
+		ttl = time.Minute
 		source = &fakes.PropertySource{}
 		source.HandlesReturns([]string{"handle-1", "handle-10"}, nil)
 		source.PropertiesStub = func(handle string) (map[string]string, error) {
@@ -130,12 +137,13 @@ var _ = Describe("Resolver", func() {
 	})
 
 	JustBeforeEach(func() {
-		index := identity.NewCgroupIndex(root, clock.Now)
-		resolver = identity.NewResolver(index, source, keys, time.Minute, clock.Now, lagertest.NewTestLogger("resolver"))
+		index := identity.NewCgroupIndex(root, now)
+		resolver = identity.NewResolver(index, source, keys, ttl, now, lagertest.NewTestLogger("resolver"))
 	})
 
 	It("resolves a container cgroup to its handle and selected properties", func() {
 		init := mkdir(root, "handle-1", "init")
+		resolver.Refresh()
 
 		c, ok := resolver.Resolve(inode(init))
 		Expect(ok).To(BeTrue())
@@ -148,10 +156,12 @@ var _ = Describe("Resolver", func() {
 				"space_name":     "my-space",
 			},
 		}))
+		Expect(resolver.MissingProperties.Load()).To(BeZero())
 	})
 
 	It("resolves sibling cgroups of processes to the longest matching handle", func() {
 		healthcheck := mkdir(root, "handle-10-liveness-healthcheck-0")
+		resolver.Refresh()
 
 		c, ok := resolver.Resolve(inode(healthcheck))
 		Expect(ok).To(BeTrue())
@@ -161,6 +171,7 @@ var _ = Describe("Resolver", func() {
 
 	It("skips the throttling parent cgroups", func() {
 		init := mkdir(root, "bad", "handle-1", "init")
+		resolver.Refresh()
 
 		c, ok := resolver.Resolve(inode(init))
 		Expect(ok).To(BeTrue())
@@ -176,15 +187,24 @@ var _ = Describe("Resolver", func() {
 		Expect(resolver.UnknownCgroups.Load()).To(Equal(uint64(2)))
 	})
 
-	It("caches properties for the TTL", func() {
+	It("never calls Garden from Resolve", func() {
 		init := mkdir(root, "handle-1", "init")
-		resolver.Resolve(inode(init))
-		resolver.Resolve(inode(init))
-		Expect(source.PropertiesCallCount()).To(Equal(1))
+		resolver.Refresh()
+		for i := 0; i < 3; i++ {
+			resolver.Resolve(inode(init))
+		}
+		Expect(source.HandlesCallCount()).To(Equal(1))
+		Expect(source.PropertiesCallCount()).To(Equal(2))
+	})
+
+	It("refreshes properties after the TTL", func() {
+		resolver.Refresh()
+		resolver.Refresh()
+		Expect(source.PropertiesCallCount()).To(Equal(2), "once per container")
 
 		clock.Advance(2 * time.Minute)
-		resolver.Resolve(inode(init))
-		Expect(source.PropertiesCallCount()).To(Equal(2))
+		resolver.Refresh()
+		Expect(source.PropertiesCallCount()).To(Equal(4))
 	})
 
 	Context("when no properties are configured", func() {
@@ -194,41 +214,48 @@ var _ = Describe("Resolver", func() {
 
 		It("doesn't ask Garden for properties", func() {
 			init := mkdir(root, "handle-1", "init")
+			resolver.Refresh()
 			c, ok := resolver.Resolve(inode(init))
 			Expect(ok).To(BeTrue())
 			Expect(c.Properties).To(BeNil())
 			Expect(source.PropertiesCallCount()).To(BeZero())
+			Expect(resolver.MissingProperties.Load()).To(BeZero())
 		})
 	})
 
 	Context("when Garden fails", func() {
 		It("returns the handle without properties, counts the error and retries later", func() {
 			init := mkdir(root, "handle-1", "init")
+			source.HandlesReturns([]string{"handle-1"}, nil)
 			source.PropertiesStub = nil
 			source.PropertiesReturns(nil, errors.New("garden down"))
+			resolver.Refresh()
 
 			c, ok := resolver.Resolve(inode(init))
 			Expect(ok).To(BeTrue())
 			Expect(c.Handle).To(Equal("handle-1"))
 			Expect(c.Properties).To(BeNil())
 			Expect(resolver.GardenErrors.Load()).To(Equal(uint64(1)))
+			Expect(resolver.MissingProperties.Load()).To(Equal(uint64(1)))
 
-			resolver.Resolve(inode(init))
-			Expect(source.PropertiesCallCount()).To(Equal(1))
+			resolver.Refresh()
+			Expect(source.PropertiesCallCount()).To(Equal(1), "not retried right away")
 
 			clock.Advance(10 * time.Second)
 			source.PropertiesReturns(map[string]string{"network.app_id": "late"}, nil)
+			resolver.Refresh()
 			c, _ = resolver.Resolve(inode(init))
 			Expect(c.Properties).To(Equal(map[string]string{"network.app_id": "late"}))
 		})
 
 		It("keeps the cached properties when a refresh fails", func() {
 			init := mkdir(root, "handle-1", "init")
-			resolver.Resolve(inode(init))
+			resolver.Refresh()
 
 			clock.Advance(2 * time.Minute)
 			source.PropertiesStub = nil
 			source.PropertiesReturns(nil, errors.New("garden down"))
+			resolver.Refresh()
 			c, _ := resolver.Resolve(inode(init))
 			Expect(c.Properties).To(HaveKeyWithValue("app_name", "my-app"))
 		})
@@ -236,27 +263,115 @@ var _ = Describe("Resolver", func() {
 		It("uses the cgroup name as the handle when Garden can't list containers", func() {
 			source.HandlesReturns(nil, errors.New("garden down"))
 			init := mkdir(root, "handle-1", "init")
+			resolver.Refresh()
+
 			c, ok := resolver.Resolve(inode(init))
 			Expect(ok).To(BeTrue())
 			Expect(c.Handle).To(Equal("handle-1"))
-			Expect(resolver.GardenErrors.Load()).To(BeNumerically(">=", 1))
+			Expect(resolver.GardenErrors.Load()).To(Equal(uint64(1)))
+		})
+
+		It("doesn't count containers that were destroyed during a refresh as errors", func() {
+			source.HandlesReturns([]string{"gone", "handle-1"}, nil)
+			source.PropertiesStub = func(handle string) (map[string]string, error) {
+				if handle == "gone" {
+					return nil, garden.ContainerNotFoundError{Handle: handle}
+				}
+				return map[string]string{"network.app_id": "app"}, nil
+			}
+			init := mkdir(root, "handle-1", "init")
+			resolver.Refresh()
+
+			c, _ := resolver.Resolve(inode(init))
+			Expect(c.Properties).To(Equal(map[string]string{"network.app_id": "app"}))
+			Expect(resolver.GardenErrors.Load()).To(BeZero())
 		})
 	})
 
 	It("drops cached properties of containers that no longer exist", func() {
-		init := mkdir(root, "handle-1", "init")
-		resolver.Resolve(inode(init))
-		Expect(source.PropertiesCallCount()).To(Equal(1))
+		resolver.Refresh()
+		Expect(source.PropertiesCallCount()).To(Equal(2))
 
 		source.HandlesReturns([]string{"handle-10"}, nil)
-		clock.Advance(2 * time.Second)
-		other := mkdir(root, "handle-10-envoy")
-		resolver.Resolve(inode(other))
-
+		resolver.Refresh()
 		source.HandlesReturns([]string{"handle-1", "handle-10"}, nil)
-		clock.Advance(2 * time.Second)
-		resolver.Resolve(inode(init))
-		Expect(source.PropertiesCallCount()).To(Equal(3))
+		resolver.Refresh()
+		Expect(source.PropertiesCallCount()).To(Equal(3), "handle-1 is fetched again")
+	})
+
+	Context("running in the background", func() {
+		var stop chan struct{}
+
+		BeforeEach(func() {
+			now = time.Now
+			stop = make(chan struct{})
+		})
+
+		JustBeforeEach(func() {
+			resolver.Refresh()
+			go resolver.Run(stop)
+		})
+
+		AfterEach(func() {
+			close(stop)
+		})
+
+		It("refreshes when it sees a new container and waits briefly for it", func() {
+			source.HandlesReturns([]string{"handle-1", "handle-10", "new"}, nil)
+			init := mkdir(root, "new", "init")
+
+			c, ok := resolver.Resolve(inode(init))
+			Expect(ok).To(BeTrue())
+			Expect(c.Handle).To(Equal("new"))
+			Expect(c.Properties).To(HaveKeyWithValue("network.app_id", "app-guid-of-new"))
+			Expect(resolver.MissingProperties.Load()).To(BeZero())
+		})
+
+		Context("when Garden isn't answering", func() {
+			BeforeEach(func() {
+				source.HandlesReturns(nil, errors.New("timeout"))
+			})
+
+			It("doesn't wait", func() {
+				init := mkdir(root, "new", "init")
+
+				start := time.Now()
+				c, ok := resolver.Resolve(inode(init))
+				Expect(time.Since(start)).To(BeNumerically("<", 100*time.Millisecond))
+				Expect(ok).To(BeTrue())
+				Expect(c.Handle).To(Equal("new"))
+				Expect(c.Properties).To(BeNil())
+				Expect(resolver.MissingProperties.Load()).To(Equal(uint64(1)))
+			})
+		})
+
+		Context("when a refresh is slow", func() {
+			BeforeEach(func() {
+				ttl = time.Nanosecond
+			})
+
+			It("keeps resolving known containers from the cache", func() {
+				init := mkdir(root, "handle-1", "init")
+				release := make(chan struct{})
+				defer close(release)
+				source.PropertiesStub = func(handle string) (map[string]string, error) {
+					select {
+					case <-release:
+					case <-time.After(5 * time.Second):
+					}
+					return map[string]string{"network.app_id": "slow"}, nil
+				}
+				resolver.Resolve(inode(mkdir(root, "unknown")))
+				Eventually(source.PropertiesCallCount).Should(BeNumerically(">", 2), "a refresh is in progress")
+
+				start := time.Now()
+				for i := 0; i < 10; i++ {
+					c, _ := resolver.Resolve(inode(init))
+					Expect(c.Properties).To(HaveKeyWithValue("app_name", "my-app"))
+				}
+				Expect(time.Since(start)).To(BeNumerically("<", 100*time.Millisecond))
+			})
+		})
 	})
 })
 

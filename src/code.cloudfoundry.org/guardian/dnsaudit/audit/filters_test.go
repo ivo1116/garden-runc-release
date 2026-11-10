@@ -39,6 +39,16 @@ var _ = Describe("Deduper", func() {
 		c1, c2  identity.Container
 	)
 
+	// seen checks a query and marks it as logged when it may be logged, like
+	// the processor does when the rate limit allows it.
+	seen := func(c identity.Container, name, qtype string, now time.Time) (bool, uint64, bool) {
+		log, repeats, full := deduper.Check(c, name, qtype, now)
+		if log {
+			deduper.Logged(c, name, qtype, now)
+		}
+		return log, repeats, full
+	}
+
 	BeforeEach(func() {
 		deduper = audit.NewDeduper(time.Minute, 1<<20)
 		start = time.Unix(1000, 0)
@@ -47,31 +57,50 @@ var _ = Describe("Deduper", func() {
 	})
 
 	It("logs the first query, suppresses repeats in the window and reports them next time", func() {
-		log, repeats, full := deduper.Check(c1, "example.com", "A", start)
+		log, repeats, full := seen(c1, "example.com", "A", start)
 		Expect([]any{log, repeats, full}).To(Equal([]any{true, uint64(0), false}))
 		for i := 1; i <= 3; i++ {
-			log, _, _ = deduper.Check(c1, "example.com", "A", start.Add(time.Duration(i)*time.Second))
+			log, _, _ = seen(c1, "example.com", "A", start.Add(time.Duration(i)*time.Second))
 			Expect(log).To(BeFalse())
 		}
-		log, repeats, _ = deduper.Check(c1, "example.com", "A", start.Add(time.Minute))
+		log, repeats, _ = seen(c1, "example.com", "A", start.Add(time.Minute))
 		Expect(log).To(BeTrue())
 		Expect(repeats).To(Equal(uint64(3)))
 	})
 
 	It("tracks container, name and type separately", func() {
-		Expect(first(deduper.Check(c1, "example.com", "A", start))).To(BeTrue())
-		Expect(first(deduper.Check(c2, "example.com", "A", start))).To(BeTrue())
-		Expect(first(deduper.Check(c1, "example.com", "AAAA", start))).To(BeTrue())
-		Expect(first(deduper.Check(c1, "example.com", "A", start))).To(BeFalse())
+		Expect(first(seen(c1, "example.com", "A", start))).To(BeTrue())
+		Expect(first(seen(c2, "example.com", "A", start))).To(BeTrue())
+		Expect(first(seen(c1, "example.com", "AAAA", start))).To(BeTrue())
+		Expect(first(seen(c1, "example.com", "A", start))).To(BeFalse())
+	})
+
+	It("starts a window only for queries that were logged", func() {
+		Expect(first(deduper.Check(c1, "dropped.example", "A", start))).To(BeTrue())
+		Expect(deduper.Len()).To(BeZero())
+		Expect(first(deduper.Check(c1, "dropped.example", "A", start.Add(time.Second)))).To(BeTrue(), "not a repeat of a query that wasn't logged")
+	})
+
+	It("keeps counting repeats until the query is logged again", func() {
+		seen(c1, "example.com", "A", start)
+		seen(c1, "example.com", "A", start.Add(time.Second))
+
+		log, repeats, _ := deduper.Check(c1, "example.com", "A", start.Add(time.Minute))
+		Expect(log).To(BeTrue())
+		Expect(repeats).To(Equal(uint64(1)))
+
+		log, repeats, _ = seen(c1, "example.com", "A", start.Add(time.Minute+time.Second))
+		Expect(log).To(BeTrue())
+		Expect(repeats).To(Equal(uint64(1)), "the earlier check wasn't followed by Logged")
 	})
 
 	It("bounds its memory and logs without tracking when full", func() {
 		deduper = audit.NewDeduper(time.Minute, 450)
-		Expect(third(deduper.Check(c1, "a.example", "A", start))).To(BeFalse())
-		Expect(third(deduper.Check(c1, "b.example", "A", start))).To(BeFalse())
-		Expect(third(deduper.Check(c1, "c.example", "A", start))).To(BeFalse())
+		Expect(third(seen(c1, "a.example", "A", start))).To(BeFalse())
+		Expect(third(seen(c1, "b.example", "A", start))).To(BeFalse())
+		Expect(third(seen(c1, "c.example", "A", start))).To(BeFalse())
 
-		log, _, full := deduper.Check(c1, "d.example", "A", start)
+		log, _, full := seen(c1, "d.example", "A", start)
 		Expect(log).To(BeTrue())
 		Expect(full).To(BeTrue())
 		Expect(deduper.Len()).To(Equal(3))
@@ -79,9 +108,9 @@ var _ = Describe("Deduper", func() {
 	})
 
 	It("prunes idle entries, reports their repeats and frees their memory", func() {
-		deduper.Check(c1, "example.com", "A", start)
-		deduper.Check(c1, "example.com", "A", start.Add(time.Second))
-		deduper.Check(c2, "quiet.example", "A", start)
+		seen(c1, "example.com", "A", start)
+		seen(c1, "example.com", "A", start.Add(time.Second))
+		seen(c2, "quiet.example", "A", start)
 
 		Expect(deduper.Prune(start.Add(30 * time.Second))).To(BeEmpty())
 		flushed := deduper.Prune(start.Add(time.Second + time.Minute))
@@ -95,30 +124,36 @@ var _ = Describe("RateLimiter", func() {
 	var (
 		limiter *audit.RateLimiter
 		start   time.Time
-		c1      identity.Container
+		c1, c2  identity.Container
 	)
 
+	allow := func(c identity.Container, name string, now time.Time) bool {
+		allowed, _ := limiter.Allow(c, name, now)
+		return allowed
+	}
+
 	BeforeEach(func() {
-		limiter = audit.NewRateLimiter(2, 4, 3, 2)
+		limiter = audit.NewRateLimiter(2, 4, 0, 0, 3, 2)
 		start = time.Unix(1000, 0)
 		c1 = identity.Container{Handle: "handle-1"}
+		c2 = identity.Container{Handle: "handle-2"}
 	})
 
 	It("allows a burst, then the steady rate", func() {
 		for i := 0; i < 4; i++ {
-			Expect(limiter.Allow(c1, "x.example", start)).To(BeTrue())
+			Expect(allow(c1, "x.example", start)).To(BeTrue())
 		}
-		Expect(limiter.Allow(c1, "x.example", start)).To(BeFalse())
-		Expect(limiter.Allow(c1, "x.example", start.Add(250*time.Millisecond))).To(BeFalse())
-		Expect(limiter.Allow(c1, "x.example", start.Add(500*time.Millisecond))).To(BeTrue())
+		Expect(allow(c1, "x.example", start)).To(BeFalse())
+		Expect(allow(c1, "x.example", start.Add(250*time.Millisecond))).To(BeFalse())
+		Expect(allow(c1, "x.example", start.Add(500*time.Millisecond))).To(BeTrue())
 	})
 
 	It("summarises what it dropped by suffix, most frequent first, once", func() {
 		for i := 0; i < 4; i++ {
-			limiter.Allow(c1, "warmup.example", start)
+			allow(c1, "warmup.example", start)
 		}
 		for _, name := range []string{"a.t1.tunnel.example", "b.t2.tunnel.example", "c.tunnel.example", "x.other.org", "y.third.net", "z.fourth.io"} {
-			limiter.Allow(c1, name, start)
+			allow(c1, name, start)
 		}
 
 		Expect(limiter.Drain()).To(Equal([]audit.Dropped{{
@@ -133,9 +168,45 @@ var _ = Describe("RateLimiter", func() {
 	})
 
 	It("forgets buckets that have refilled", func() {
-		limiter.Allow(c1, "x.example", start)
+		allow(c1, "x.example", start)
 		limiter.Prune(start.Add(time.Second))
 		Expect(limiter.Len()).To(BeZero())
+	})
+
+	Context("with a cell limit", func() {
+		BeforeEach(func() {
+			limiter = audit.NewRateLimiter(2, 4, 1, 5, 3, 2)
+		})
+
+		It("limits all containers together and says so in the summary", func() {
+			for i := 0; i < 4; i++ {
+				Expect(allow(c1, "a.example", start)).To(BeTrue())
+			}
+			Expect(allow(c2, "b.example", start)).To(BeTrue())
+
+			allowed, byCell := limiter.Allow(c2, "b.example", start)
+			Expect(allowed).To(BeFalse())
+			Expect(byCell).To(BeTrue())
+
+			allowed, byCell = limiter.Allow(c1, "a.example", start)
+			Expect(allowed).To(BeFalse())
+			Expect(byCell).To(BeFalse(), "c1 is over its own limit")
+
+			Expect(limiter.Drain()).To(Equal([]audit.Dropped{
+				{Container: c1, Dropped: 1, TopSuffixes: []audit.SuffixCount{{Suffix: "a.example", Count: 1}}},
+				{Container: c2, Dropped: 1, DroppedByCellLimit: 1, TopSuffixes: []audit.SuffixCount{{Suffix: "b.example", Count: 1}}},
+			}))
+		})
+
+		It("doesn't use up a container's allowance for queries the cell limit dropped", func() {
+			limiter = audit.NewRateLimiter(1, 2, 10, 1, 3, 2)
+			Expect(allow(c1, "a.example", start)).To(BeTrue())
+			Expect(allow(c2, "b.example", start)).To(BeFalse())
+			Expect(allow(c2, "b.example", start)).To(BeFalse())
+
+			Expect(allow(c2, "b.example", start.Add(100*time.Millisecond))).To(BeTrue(),
+				"the cell limit refilled, and c2 still has its full burst")
+		})
 	})
 })
 

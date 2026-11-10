@@ -51,11 +51,11 @@ var _ = Describe("ParseRecord", func() {
 
 	It("rejects short records and invalid capture lengths", func() {
 		_, err := capture.ParseRecord(make([]byte, 10))
-		Expect(err).To(HaveOccurred())
+		Expect(err).To(MatchError(capture.ErrInvalidRecord))
 		_, err = capture.ParseRecord(record(1, 1, 1, capture.MaxCaptureLength+1, 0, nil))
-		Expect(err).To(HaveOccurred())
+		Expect(err).To(MatchError(capture.ErrInvalidRecord))
 		_, err = capture.ParseRecord(record(1, 1, 1, 100, 0, nil)[:50])
-		Expect(err).To(HaveOccurred())
+		Expect(err).To(MatchError(capture.ErrInvalidRecord))
 	})
 })
 

@@ -183,6 +183,60 @@ var _ = Describe("Processor", func() {
 		}`))
 	})
 
+	It("doesn't report rate-limited queries as repeats of a line that wasn't written", func() {
+		for _, name := range []string{"a.example", "b.example", "c.example", "d.example", "d.example"} {
+			processor.Handle(egress(queryPacket(1, 1, name)))
+		}
+		Expect(logs("dns-query")).To(HaveLen(3))
+		Expect(processor.Counters.RateLimited.Load()).To(Equal(uint64(2)))
+		Expect(processor.Counters.QueriesSuppressed.Load()).To(BeZero())
+
+		clock.Advance(time.Minute)
+		processor.Tick()
+		Expect(logs("dns-repeats")).To(BeEmpty())
+		Expect(logs("dns-rate-limited")).To(HaveLen(1))
+		Expect(logs("dns-rate-limited")[0].Data["dropped"]).To(BeNumerically("==", 2))
+	})
+
+	Context("with a cell limit", func() {
+		other := identity.Container{Handle: "handle-2", Cgroup: "handle-2/init"}
+
+		BeforeEach(func() {
+			opts.CellRatePerSecond = 1
+			opts.CellBurst = 2
+			resolver.ResolveStub = func(id uint64) (identity.Container, bool) {
+				switch id {
+				case 42:
+					return container, true
+				case 43:
+					return other, true
+				}
+				return identity.Container{}, false
+			}
+		})
+
+		It("limits all containers together and reports the drops per container", func() {
+			processor.Handle(egress(queryPacket(1, 1, "a.example")))
+			processor.Handle(egress(queryPacket(1, 1, "b.example")))
+			processor.Handle(audit.Event{CgroupID: 43, Time: captured, Direction: audit.Egress, Data: queryPacket(1, 1, "c.example")})
+
+			Expect(logs("dns-query")).To(HaveLen(2))
+			Expect(processor.Counters.RateLimited.Load()).To(Equal(uint64(1)))
+			Expect(processor.Counters.RateLimitedCell.Load()).To(Equal(uint64(1)))
+
+			clock.Advance(time.Minute)
+			processor.Tick()
+			Expect(logs("dns-rate-limited")).To(HaveLen(1))
+			Expect(dataJSON(logs("dns-rate-limited")[0])).To(MatchJSON(`{
+				"container": {"handle": "handle-2", "cgroup": "handle-2/init"},
+				"host": {"ip": "10.0.73.1", "id": "cell-id"},
+				"dropped": 1,
+				"dropped_by_cell_limit": 1,
+				"top_suffixes": [{"suffix": "c.example", "count": 1}]
+			}`))
+		})
+	})
+
 	Context("with response capture", func() {
 		BeforeEach(func() {
 			opts.CaptureResponses = true

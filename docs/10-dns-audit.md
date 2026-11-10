@@ -14,8 +14,9 @@ such as lookups that fail or that carry data themselves.
 
 ## How it works
 
-- Two small eBPF programs of type `cgroup_skb`, built in Go at start-up, are attached to Garden's parent
-  cgroup (`/sys/fs/cgroup/garden`) through BPF links:
+- Two small eBPF programs of type `cgroup_skb`, built in Go at start-up, are
+  attached to Garden's parent cgroup (`/sys/fs/cgroup/garden`) through BPF
+  links:
   - the egress program sees packets sent by sockets in any container cgroup
     and copies DNS queries (UDP or TCP to port 53, IPv4 or IPv6) into a ring
     buffer;
@@ -24,17 +25,27 @@ such as lookups that fail or that carry data themselves.
 - Both programs always let the packet through. They never delay, drop or
   change traffic.
 - A userspace daemon reads the ring buffer, maps the cgroup of the sending
-  socket to the Garden container handle, reads the configured container
-  properties from the Garden API, and writes one JSON line per query to
+  socket to the Garden container handle, adds the configured container
+  properties, and writes one JSON line per query to
   `/var/vcap/sys/log/dns-audit/dns.log`.
+- The daemon reads the container properties from the Garden API in the
+  background and caches them, so a slow Garden API doesn't hold up the
+  processing of packets. For a container it hasn't seen yet it waits up to
+  250 ms for the properties; if Garden doesn't answer in time, the line is
+  written with the handle only.
 - Attribution comes from the kernel (the socket's cgroup), not from IP
   addresses, so it is correct even when a container forges its source address
   or an IP address is reused.
 - When the daemon stops or crashes, its BPF links are closed and the programs
   are detached.
 
-Requirements: cgroups v2 (Noble stemcells) and the `garden` job on the same
-instance.
+Requirements:
+
+- cgroups v2 (Noble stemcells);
+- the `garden` job on the same instance, listening on a Unix socket (the
+  default). If `garden.listen_address` is changed, set
+  `dns_audit.garden_socket` to the same path. A Garden server listening on
+  TCP is not supported.
 
 ## Enabling
 
@@ -73,7 +84,9 @@ restricted access, and don't forward it to app log streams.
 - `garden.dns-audit.dns-repeats`: identical queries that were suppressed and
   not reported with a later query.
 - `garden.dns-audit.dns-rate-limited`: queries dropped by the per-container
-  rate limit, with the most frequent domain suffixes (last two labels).
+  or the cell-wide rate limit, per container, with the most frequent domain
+  suffixes (last two labels). `dropped_by_cell_limit` is the part dropped by
+  the cell-wide limit.
 
 Query names are lowercased and written like `dig` prints them: a dot inside a
 label is `\.`, a backslash is `\\`, and other bytes outside printable ASCII are
@@ -133,10 +146,13 @@ arrived within the timeout.
 |---|---|---|
 | `dns_audit.dedup_window_seconds` | `60` | Identical queries per container within the window are counted, not logged |
 | `dns_audit.max_logs_per_second_per_container` | `10` | Per-container limit, with bursts of five times the limit; excess is summarised |
+| `dns_audit.max_logs_per_second` | `100` | Limit for all containers on the cell together, with bursts of five times the limit; excess is summarised |
 | `dns_audit.exclude_domains` | `[]` | Suffixes never logged. Only exclude zones answered on the cell, such as platform-internal domains; zones forwarded to outside resolvers can carry data |
 | `dns_audit.ring_buffer_size_kb` | `4096` | Kernel buffer between the programs and the daemon |
 
-Dropped or suppressed queries are always reported in summary lines.
+Dropped or suppressed queries are always reported in summary lines. A query
+line is about 1 KB with the property list above, so the cell-wide limit bounds
+`dns.log` to about 100 KB/s by default.
 
 ## Metrics
 
@@ -149,10 +165,13 @@ log (`/var/vcap/sys/log/dns-audit/dns-audit.stdout.log`) every 30 seconds:
 | `ringbuf_full` | Packets not copied because the ring buffer was full |
 | `events` | Packets processed by the daemon |
 | `queries_logged`, `queries_suppressed`, `rate_limited`, `excluded` | Volume controls |
+| `rate_limited_cell` | Part of `rate_limited` dropped by the cell-wide limit |
 | `responses_matched`, `responses_unmatched`, `responses_timed_out`, `pending_responses` | Response capture |
 | `malformed`, `unsupported`, `not_query` | Packets to or from port 53 that couldn't be used |
 | `unknown_cgroups` | Packets from cgroups that couldn't be mapped to a container |
-| `garden_errors` | Failed Garden API requests; lines are then written with the handle only |
+| `garden_errors` | Failed Garden API requests |
+| `missing_properties` | Lines written with the handle only, because the container's properties weren't available yet or couldn't be fetched |
+| `read_errors` | Failed reads from the ring buffer |
 | `dedup_cache_full`, `pending_full` | Memory limits reached |
 
 ## Limitations
@@ -162,12 +181,22 @@ The following are not recorded:
 - encrypted DNS (DNS over HTTPS, TLS or QUIC) and DNS on ports other than 53;
 - packets sent through raw packet sockets (`AF_PACKET`) inside a container;
 - DNS over TCP when the 2-byte length prefix and the message are sent in
-  separate segments;
+  separate segments, and any but the first message in a segment (pipelined
+  queries);
 - IPv6 packets with extension headers;
 - privileged containers, which don't run in Garden's cgroup tree;
 - cells with cgroups v1.
 
 When a query contains several questions, only the first is recorded.
+
+The ring buffer is shared by all containers on the cell, and the rate limits
+apply after it, in the daemon. A container that sends DNS packets faster than
+the daemon can process them fills the buffer, and queries from all containers
+are then dropped until it drains (counted in `ringbuf_full`; traffic itself is
+not affected). Alert on `ringbuf_full` growing.
+
+Rate-limit summaries group names by their last two labels, so names under a
+public suffix such as `co.uk` are grouped by the suffix.
 
 ## The eBPF programs
 

@@ -81,9 +81,10 @@ func entrySize(key dedupKey) int {
 	return len(key.handle) + len(key.name) + len(key.qtype) + dedupEntryOverhead
 }
 
-// Check records a query and reports whether it should be logged, how many
+// Check reports whether a query should be logged and, if so, how many
 // identical queries were suppressed since it was last logged, and whether the
-// cache was full so the query could not be tracked.
+// cache is full so the query can't be tracked. A query inside the window is
+// counted as a repeat. Call Logged once the query has actually been logged.
 func (d *Deduper) Check(container identity.Container, name, qtype string, now time.Time) (bool, uint64, bool) {
 	key := dedupKey{handle: container.Handle, name: name, qtype: qtype}
 	if entry, ok := d.entries[key]; ok {
@@ -92,20 +93,28 @@ func (d *Deduper) Check(container identity.Container, name, qtype string, now ti
 			entry.suppressed++
 			return false, 0, false
 		}
-		repeats := entry.suppressed
+		return true, entry.suppressed, false
+	}
+	return true, 0, d.bytes+entrySize(key) > d.maxBytes
+}
+
+// Logged starts a new window for a query that was logged, unless the cache
+// is full.
+func (d *Deduper) Logged(container identity.Container, name, qtype string, now time.Time) {
+	key := dedupKey{handle: container.Handle, name: name, qtype: qtype}
+	if entry, ok := d.entries[key]; ok {
 		entry.suppressed = 0
 		entry.lastLogged = now
+		entry.lastSeen = now
 		entry.container = container
-		return true, repeats, false
+		return
 	}
-
 	size := entrySize(key)
 	if d.bytes+size > d.maxBytes {
-		return true, 0, true
+		return
 	}
 	d.entries[key] = &dedupEntry{container: container, lastLogged: now, lastSeen: now}
 	d.bytes += size
-	return true, 0, false
 }
 
 // Prune forgets queries not seen for a full window and returns the ones that
@@ -144,40 +153,61 @@ type bucket struct {
 	last   time.Time
 }
 
+func (b *bucket) refill(now time.Time, rate, burst float64) {
+	b.tokens += now.Sub(b.last).Seconds() * rate
+	if b.tokens > burst {
+		b.tokens = burst
+	}
+	b.last = now
+}
+
 type SuffixCount struct {
 	Suffix string `json:"suffix"`
 	Count  uint64 `json:"count"`
 }
 
 type Dropped struct {
-	Container   identity.Container
-	Dropped     uint64
-	TopSuffixes []SuffixCount
+	Container identity.Container
+	Dropped   uint64
+	// DroppedByCellLimit is the part of Dropped that the container's own limit
+	// would have allowed.
+	DroppedByCellLimit uint64
+	TopSuffixes        []SuffixCount
 }
 
 type dropState struct {
 	container identity.Container
 	dropped   uint64
+	byCell    uint64
 	suffixes  map[string]uint64
 }
 
-// RateLimiter is a token bucket per container. It remembers what it dropped,
-// per name suffix, so that the summary still shows where the queries went.
+// RateLimiter is a token bucket per container plus one for the whole cell.
+// It remembers what it dropped, per container and name suffix, so that the
+// summary still shows where the queries went.
 type RateLimiter struct {
 	rate        float64
 	burst       float64
+	cellRate    float64
+	cellBurst   float64
 	maxSuffixes int
 	topSuffixes int
+	cell        *bucket
 	buckets     map[string]*bucket
 	dropped     map[string]*dropState
 }
 
 const otherSuffixes = "(other)"
 
-func NewRateLimiter(perSecond, burst, maxSuffixes, topSuffixes int) *RateLimiter {
+// NewRateLimiter returns a limiter that allows perSecond queries per container
+// with bursts of burst, and cellPerSecond queries for all containers together
+// with bursts of cellBurst. A cellPerSecond of 0 disables the cell limit.
+func NewRateLimiter(perSecond, burst, cellPerSecond, cellBurst, maxSuffixes, topSuffixes int) *RateLimiter {
 	return &RateLimiter{
 		rate:        float64(perSecond),
 		burst:       float64(burst),
+		cellRate:    float64(cellPerSecond),
+		cellBurst:   float64(cellBurst),
 		maxSuffixes: maxSuffixes,
 		topSuffixes: topSuffixes,
 		buckets:     map[string]*bucket{},
@@ -185,23 +215,37 @@ func NewRateLimiter(perSecond, burst, maxSuffixes, topSuffixes int) *RateLimiter
 	}
 }
 
-func (r *RateLimiter) Allow(container identity.Container, name string, now time.Time) bool {
+// Allow reports whether a query may be logged and, if not, whether it was
+// the cell limit that dropped it. A query dropped by the cell limit doesn't
+// use up the container's own allowance.
+func (r *RateLimiter) Allow(container identity.Container, name string, now time.Time) (bool, bool) {
 	b, ok := r.buckets[container.Handle]
 	if !ok {
 		b = &bucket{tokens: r.burst, last: now}
 		r.buckets[container.Handle] = b
-	} else {
-		b.tokens += now.Sub(b.last).Seconds() * r.rate
-		if b.tokens > r.burst {
-			b.tokens = r.burst
-		}
-		b.last = now
 	}
-	if b.tokens >= 1 {
-		b.tokens--
-		return true
+	b.refill(now, r.rate, r.burst)
+	if b.tokens < 1 {
+		r.drop(container, name, false)
+		return false, false
 	}
 
+	if r.cellRate > 0 {
+		if r.cell == nil {
+			r.cell = &bucket{tokens: r.cellBurst, last: now}
+		}
+		r.cell.refill(now, r.cellRate, r.cellBurst)
+		if r.cell.tokens < 1 {
+			r.drop(container, name, true)
+			return false, true
+		}
+		r.cell.tokens--
+	}
+	b.tokens--
+	return true, false
+}
+
+func (r *RateLimiter) drop(container identity.Container, name string, byCell bool) {
 	state, ok := r.dropped[container.Handle]
 	if !ok {
 		state = &dropState{suffixes: map[string]uint64{}}
@@ -209,12 +253,14 @@ func (r *RateLimiter) Allow(container identity.Container, name string, now time.
 	}
 	state.container = container
 	state.dropped++
+	if byCell {
+		state.byCell++
+	}
 	suffix := decode.Suffix(name)
 	if _, tracked := state.suffixes[suffix]; !tracked && len(state.suffixes) >= r.maxSuffixes {
 		suffix = otherSuffixes
 	}
 	state.suffixes[suffix]++
-	return false
 }
 
 // Drain returns what was dropped since the previous call, per container.
@@ -234,7 +280,7 @@ func (r *RateLimiter) Drain() []Dropped {
 		if len(counts) > r.topSuffixes {
 			counts = counts[:r.topSuffixes]
 		}
-		out = append(out, Dropped{Container: state.container, Dropped: state.dropped, TopSuffixes: counts})
+		out = append(out, Dropped{Container: state.container, Dropped: state.dropped, DroppedByCellLimit: state.byCell, TopSuffixes: counts})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Container.Handle < out[j].Container.Handle })
 	r.dropped = map[string]*dropState{}

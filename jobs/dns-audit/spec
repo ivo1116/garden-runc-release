@@ -31,6 +31,10 @@ properties:
     description: "Maximum number of queries logged per second for each container, with bursts of up to five times this value. Queries over the limit are counted and summarised per domain suffix."
     default: 10
 
+  dns_audit.max_logs_per_second:
+    description: "Maximum number of queries logged per second for all containers on the cell together, with bursts of up to five times this value. Bounds the log volume when many containers are busy. Queries over the limit are counted and summarised like those over the per-container limit."
+    default: 100
+
   dns_audit.exclude_domains:
     description: "Domain suffixes that are never logged. A suffix matches the domain and its subdomains. Only exclude zones that are answered on the cell."
     default: []
@@ -44,5 +48,5 @@ properties:
     default: 4096
 
   dns_audit.garden_socket:
-    description: "Path of the Garden API socket, used to look up container properties."
+    description: "Path of the Garden API socket, used to look up container properties. Must match garden.listen_address; a Garden server listening on TCP is not supported."
     default: /var/vcap/data/garden/garden.sock

@@ -3,10 +3,12 @@
 
   window = p('dns_audit.dedup_window_seconds')
   rate = p('dns_audit.max_logs_per_second_per_container')
+  cell_rate = p('dns_audit.max_logs_per_second')
   ring = p('dns_audit.ring_buffer_size_kb')
 
   raise 'dns_audit.dedup_window_seconds must be greater than 0' unless window.is_a?(Integer) && window > 0
   raise 'dns_audit.max_logs_per_second_per_container must be greater than 0' unless rate.is_a?(Integer) && rate > 0
+  raise 'dns_audit.max_logs_per_second must be greater than 0' unless cell_rate.is_a?(Integer) && cell_rate > 0
   raise 'dns_audit.ring_buffer_size_kb must be a power of two and at least 4' unless ring.is_a?(Integer) && ring >= 4 && (ring & (ring - 1)).zero?
 
   JSON.pretty_generate({
@@ -20,6 +22,7 @@
     'properties' => p('dns_audit.properties'),
     'dedup_window_seconds' => window,
     'max_logs_per_second_per_container' => rate,
+    'max_logs_per_second' => cell_rate,
     'exclude_domains' => p('dns_audit.exclude_domains'),
     'capture_responses' => p('dns_audit.capture_responses'),
     'ring_buffer_size_kb' => ring,

@@ -10,6 +10,7 @@ type Counters struct {
 	QueriesLogged      atomic.Uint64
 	QueriesSuppressed  atomic.Uint64
 	RateLimited        atomic.Uint64
+	RateLimitedCell    atomic.Uint64
 	Excluded           atomic.Uint64
 	Malformed          atomic.Uint64
 	Unsupported        atomic.Uint64
@@ -27,6 +28,7 @@ func (c *Counters) Values() map[string]uint64 {
 		"queries_logged":      c.QueriesLogged.Load(),
 		"queries_suppressed":  c.QueriesSuppressed.Load(),
 		"rate_limited":        c.RateLimited.Load(),
+		"rate_limited_cell":   c.RateLimitedCell.Load(),
 		"excluded":            c.Excluded.Load(),
 		"malformed":           c.Malformed.Load(),
 		"unsupported":         c.Unsupported.Load(),

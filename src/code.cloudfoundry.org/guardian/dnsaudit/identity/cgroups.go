@@ -3,7 +3,6 @@ package identity
 import (
 	"io/fs"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
@@ -65,7 +64,7 @@ func (c *CgroupIndex) Scan() {
 		if err != nil {
 			return nil
 		}
-		stat, ok := info.Sys().(*syscall.Stat_t)
+		id, ok := inode(info)
 		if !ok {
 			return nil
 		}
@@ -73,7 +72,7 @@ func (c *CgroupIndex) Scan() {
 		if err != nil {
 			return nil
 		}
-		paths[uint64(stat.Ino)] = filepath.ToSlash(rel)
+		paths[id] = filepath.ToSlash(rel)
 		return nil
 	})
 

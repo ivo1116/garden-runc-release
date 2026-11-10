@@ -107,15 +107,24 @@ func (c *Capture) Stats() (Stats, error) {
 	return Stats{Events: values[bpf.StatEvents], RingbufFull: values[bpf.StatRingbufFull], LoadErrors: values[bpf.StatLoadErrors]}, nil
 }
 
-func (c *Capture) Close() error {
+// Detach detaches the programs from the cgroup. Records already in the ring
+// buffer can still be read.
+func (c *Capture) Detach() error {
 	var errs []error
-	if c.reader != nil {
-		errs = append(errs, c.reader.Close())
-	}
 	for _, l := range c.links {
 		errs = append(errs, l.Close())
 	}
 	c.links = nil
+	return errors.Join(errs...)
+}
+
+// Close detaches the programs and frees the ring buffer. It interrupts Read
+// and may be called more than once.
+func (c *Capture) Close() error {
+	errs := []error{c.Detach()}
+	if c.reader != nil {
+		errs = append(errs, c.reader.Close())
+	}
 	if c.collection != nil {
 		c.collection.Close()
 	}
