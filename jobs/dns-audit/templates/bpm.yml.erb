@@ -1,0 +1,11 @@
+processes:
+  - name: dns-audit
+    executable: /var/vcap/packages/dns-audit/bin/dns-audit
+    args:
+      - -config
+      - /var/vcap/jobs/dns-audit/config/dns-audit.json
+    unsafe:
+      privileged: true
+      unrestricted_volumes:
+        - path: /sys/fs/cgroup
+        - path: <%= File.dirname(p("dns_audit.garden_socket")) %>

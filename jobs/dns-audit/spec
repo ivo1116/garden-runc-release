@@ -1,0 +1,48 @@
+---
+name: dns-audit
+
+description: |
+  Optionally records DNS questions sent in plain text by app containers,
+  attributed to the container and its app, so operators can investigate
+  lookups that are not followed by a connection. Requires cgroups v2 and must
+  be colocated with the garden job.
+
+templates:
+  bpm.yml.erb: config/bpm.yml
+  dns-audit.json.erb: config/dns-audit.json
+
+packages:
+  - dns-audit
+
+properties:
+  dns_audit.enabled:
+    description: "Load the eBPF programs and log DNS queries sent by containers to /var/vcap/sys/log/dns-audit/dns.log. When false, the job doesn't run."
+    default: false
+
+  dns_audit.properties:
+    description: "Garden container property keys, or tag names of the log_config property, to include in each log line. For Cloud Foundry apps, for example: network.app_id, network.space_id, network.org_id, app_name, space_name, organization_name, process_type, instance_id."
+    default: []
+
+  dns_audit.dedup_window_seconds:
+    description: "Identical queries (same container, name and type) within this many seconds are counted instead of logged. The count is written with the next logged query, or in a summary line once the query stops."
+    default: 60
+
+  dns_audit.max_logs_per_second_per_container:
+    description: "Maximum number of queries logged per second for each container, with bursts of up to five times this value. Queries over the limit are counted and summarised per domain suffix."
+    default: 10
+
+  dns_audit.exclude_domains:
+    description: "Domain suffixes that are never logged. A suffix matches the domain and its subdomains. Only exclude zones that are answered on the cell."
+    default: []
+
+  dns_audit.capture_responses:
+    description: "Also capture DNS responses received by containers and add the response code to each logged query. Lines are then written when the response arrives, or after a timeout."
+    default: false
+
+  dns_audit.ring_buffer_size_kb:
+    description: "Size of the kernel ring buffer that holds captured packets until they are processed, in KiB. Must be a power of two. Packets that don't fit are counted and dropped; traffic is not affected."
+    default: 4096
+
+  dns_audit.garden_socket:
+    description: "Path of the Garden API socket, used to look up container properties."
+    default: /var/vcap/data/garden/garden.sock

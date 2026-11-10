@@ -16,6 +16,7 @@ require (
 	code.cloudfoundry.org/lager/v3 v3.94.0
 	code.cloudfoundry.org/localip v0.96.0
 	github.com/BurntSushi/toml v1.6.0
+	github.com/cilium/ebpf v0.22.0
 	github.com/cloudfoundry/dropsonde v1.1.0
 	github.com/cloudfoundry/gosigar v1.3.131
 	github.com/cloudfoundry/sonde-go v0.0.0-20260818080958-d46298cd8513
@@ -69,7 +70,6 @@ require (
 	github.com/bmizerany/pat v0.0.0-20210406213842-e4b6760bdd6f // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/checkpoint-restore/go-criu/v8 v8.5.0 // indirect
-	github.com/cilium/ebpf v0.22.0 // indirect
 	github.com/containerd/console v1.0.5 // indirect
 	github.com/containerd/continuity v0.5.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect

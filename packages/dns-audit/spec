@@ -1,0 +1,45 @@
+---
+name: dns-audit
+
+dependencies:
+  - golang-1.27-linux
+
+files:
+  - code.cloudfoundry.org/guardian/go.mod # gosub
+  - code.cloudfoundry.org/guardian/go.sum # gosub
+  - code.cloudfoundry.org/guardian/vendor/modules.txt
+  - code.cloudfoundry.org/guardian/cmd/dns-audit/*.go # gosub
+  - code.cloudfoundry.org/guardian/dnsaudit/audit/*.go # gosub
+  - code.cloudfoundry.org/guardian/dnsaudit/bpf/*.go # gosub
+  - code.cloudfoundry.org/guardian/dnsaudit/capture/*.go # gosub
+  - code.cloudfoundry.org/guardian/dnsaudit/config/*.go # gosub
+  - code.cloudfoundry.org/guardian/dnsaudit/decode/*.go # gosub
+  - code.cloudfoundry.org/guardian/dnsaudit/identity/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/code.cloudfoundry.org/garden/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/code.cloudfoundry.org/garden/client/connection/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/code.cloudfoundry.org/garden/routes/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/code.cloudfoundry.org/garden/transport/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/code.cloudfoundry.org/lager/v3/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/code.cloudfoundry.org/lager/v3/internal/truncate/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/bmizerany/pat/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/asm/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/btf/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/internal/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/internal/epoll/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/internal/kallsyms/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/internal/kconfig/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/internal/linux/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/internal/sys/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/internal/sysenc/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/internal/testutils/fdtrace/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/internal/tracefs/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/internal/unix/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/link/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/cilium/ebpf/ringbuf/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/openzipkin/zipkin-go/idgenerator/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/openzipkin/zipkin-go/model/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/tedsuo/rata/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/golang.org/x/sys/unix/*.c # gosub
+  - code.cloudfoundry.org/guardian/vendor/golang.org/x/sys/unix/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/golang.org/x/sys/unix/*.s # gosub
