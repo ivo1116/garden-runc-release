@@ -16,7 +16,8 @@ import (
 
 const logConfigProperty = "log_config"
 
-// Throttling parent cgroups that Garden may place containers under.
+// Throttling parent cgroups that Garden may place containers under
+// (GoodCgroupName and BadCgroupName in rundmc/cgroups).
 var throttlingCgroups = map[string]bool{"good": true, "bad": true}
 
 const (
@@ -59,9 +60,10 @@ type propertyEntry struct {
 // of the log_config property.
 //
 // Garden is only called by Refresh, which Run calls in the background, so a
-// slow or unavailable Garden API never blocks Resolve. For a container it
+// slow or unavailable Garden API doesn't hold up Resolve. For a container it
 // doesn't know yet, Resolve asks Run for a refresh and, while Garden is
-// answering, waits briefly for it, once per container.
+// answering, waits up to firstLookupWait for it, once per cgroup name. That
+// wait blocks the caller.
 type Resolver struct {
 	cgroups *CgroupIndex
 	source  PropertySource
@@ -131,7 +133,8 @@ func (r *Resolver) Resolve(cgroupID uint64) (Container, bool) {
 }
 
 // lookup maps a top-level cgroup name to a container handle and its cached
-// properties. Processes with their own resources get sibling cgroups named
+// properties. Processes with their own resources get a sibling cgroup named
+// after the process ID chosen by the client; Diego names them
 // "<handle>-<suffix>". It reports false when the handle or, if properties are
 // configured, its properties haven't been fetched yet.
 func (r *Resolver) lookup(name string) (string, map[string]string, bool) {

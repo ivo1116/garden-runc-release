@@ -163,14 +163,15 @@ log (`/var/vcap/sys/log/dns-audit/dns-audit.stdout.log`) every 30 seconds:
 |---|---|
 | `kernel_events` | Packets copied by the eBPF programs |
 | `ringbuf_full` | Packets not copied because the ring buffer was full |
+| `kernel_load_errors` | Packets the eBPF programs couldn't copy from the socket buffer |
 | `events` | Packets processed by the daemon |
 | `queries_logged`, `queries_suppressed`, `rate_limited`, `excluded` | Volume controls |
 | `rate_limited_cell` | Part of `rate_limited` dropped by the cell-wide limit |
 | `responses_matched`, `responses_unmatched`, `responses_timed_out`, `pending_responses` | Response capture |
 | `malformed`, `unsupported`, `not_query` | Packets to or from port 53 that couldn't be used |
-| `unknown_cgroups` | Packets from cgroups that couldn't be mapped to a container |
+| `unknown_cgroups` | Packets from cgroups that couldn't be mapped to a container; they are not logged |
 | `garden_errors` | Failed Garden API requests |
-| `missing_properties` | Lines written with the handle only, because the container's properties weren't available yet or couldn't be fetched |
+| `missing_properties` | Packets attributed to a container whose properties weren't available yet or couldn't be fetched, including packets that were then suppressed, rate limited or excluded; their lines carry the handle only |
 | `read_errors` | Failed reads from the ring buffer |
 | `dedup_cache_full`, `pending_full` | Memory limits reached |
 

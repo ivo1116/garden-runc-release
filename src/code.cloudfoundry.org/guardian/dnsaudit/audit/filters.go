@@ -201,7 +201,8 @@ const otherSuffixes = "(other)"
 
 // NewRateLimiter returns a limiter that allows perSecond queries per container
 // with bursts of burst, and cellPerSecond queries for all containers together
-// with bursts of cellBurst. A cellPerSecond of 0 disables the cell limit.
+// with bursts of cellBurst. A cellPerSecond of 0 disables the cell limit; the
+// daemon always sets one.
 func NewRateLimiter(perSecond, burst, cellPerSecond, cellBurst, maxSuffixes, topSuffixes int) *RateLimiter {
 	return &RateLimiter{
 		rate:        float64(perSecond),

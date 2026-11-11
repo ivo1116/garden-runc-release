@@ -99,7 +99,7 @@ var _ = Describe("Load", func() {
 		Entry("output log file", "output_log_file", "", "output_log_file must be set"),
 		Entry("dedup window", "dedup_window_seconds", 0, "dedup_window_seconds must be greater than 0"),
 		Entry("rate", "max_logs_per_second_per_container", -1, "max_logs_per_second_per_container must be greater than 0"),
-		Entry("cell rate", "max_logs_per_second", -1, "max_logs_per_second must not be negative"),
+		Entry("cell rate", "max_logs_per_second", -1, "max_logs_per_second must be greater than 0"),
 		Entry("response timeout", "response_timeout_millis", -1, "response_timeout_millis must not be negative"),
 		Entry("ring buffer not a power of two", "ring_buffer_size_kb", 1000, "ring_buffer_size_kb must be a power of two and at least 4"),
 		Entry("ring buffer too small", "ring_buffer_size_kb", 2, "ring_buffer_size_kb must be a power of two and at least 4"),

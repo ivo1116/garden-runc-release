@@ -307,6 +307,8 @@ var _ = Describe("dns-audit", func() {
 
 		session.Terminate()
 		Eventually(session, "10s").Should(gexec.Exit(0))
+		Expect(session).To(gbytes.Say(`dns-audit.stopping`))
+		Expect(session).To(gbytes.Say(`dns-audit.metrics.*"kernel_events"`))
 		Eventually(attached, "5s").Should(BeEmpty())
 	})
 

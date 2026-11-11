@@ -90,8 +90,8 @@ func (c Config) Validate() error {
 		return errors.New("dedup_window_seconds must be greater than 0")
 	case c.MaxLogsPerSecondPerContainer <= 0:
 		return errors.New("max_logs_per_second_per_container must be greater than 0")
-	case c.MaxLogsPerSecond < 0:
-		return errors.New("max_logs_per_second must not be negative")
+	case c.MaxLogsPerSecond <= 0:
+		return errors.New("max_logs_per_second must be greater than 0")
 	case c.ResponseTimeoutMillis < 0:
 		return errors.New("response_timeout_millis must not be negative")
 	case c.PropertyCacheTTLSeconds < 0:

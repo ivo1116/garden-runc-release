@@ -171,9 +171,6 @@ func run(cfg config.Config, logger lager.Logger) error {
 					draining = false
 				}
 			}
-			if err := c.Close(); err != nil {
-				logger.Error("close", err)
-			}
 			for draining := true; draining; {
 				select {
 				case record := <-records:
@@ -184,6 +181,9 @@ func run(cfg config.Config, logger lager.Logger) error {
 			}
 			processor.Flush()
 			report()
+			if err := c.Close(); err != nil {
+				logger.Error("close", err)
+			}
 			logger.Info("stopped")
 			return nil
 		}
