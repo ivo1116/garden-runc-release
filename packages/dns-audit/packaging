@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mkdir -p "${BOSH_INSTALL_TARGET}/src"
+mv * "${BOSH_INSTALL_TARGET}/src"
+mv "${BOSH_INSTALL_TARGET}/src" .
+
+source /var/vcap/packages/golang-*-linux/bosh/compile.env
+
+mkdir -p "${BOSH_INSTALL_TARGET}/bin"
+export GOBIN="${BOSH_INSTALL_TARGET}/bin"
+
+pushd src/code.cloudfoundry.org/guardian
+  go install ./cmd/dns-audit
+popd

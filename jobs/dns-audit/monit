@@ -1,0 +1,7 @@
+<% if p("dns_audit.enabled") %>
+check process dns-audit
+  with pidfile /var/vcap/sys/run/bpm/dns-audit/dns-audit.pid
+  start program "/var/vcap/jobs/bpm/bin/bpm start dns-audit"
+  stop program "/var/vcap/jobs/bpm/bin/bpm stop dns-audit"
+  group vcap
+<% end %>

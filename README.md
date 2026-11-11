@@ -23,6 +23,7 @@ for [CF Deployment](https://github.com/cloudfoundry/cf-deployment).
     Collection](./docs/08-grootfs-store-configuration.md)
 -   [Understanding container's disk usage by
     grootfs](./docs/09-understanding-container-disk-usage.md)
+-   [DNS Audit](./docs/10-dns-audit.md)
 
 # Contributing
 
