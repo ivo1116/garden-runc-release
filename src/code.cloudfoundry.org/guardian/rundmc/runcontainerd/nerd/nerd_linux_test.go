@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
 	"github.com/onsi/gomega/gexec"
+	cgrouputils "github.com/opencontainers/cgroups"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"code.cloudfoundry.org/guardian/metrics"
@@ -481,6 +482,78 @@ var _ = Describe("Nerd", func() {
 			containerPid, err := cnerd.GetContainerPID(testLogger, containerID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(procls).To(ContainSubstring(strconv.Itoa(int(containerPid))))
+		})
+	})
+
+	Describe("WithoutRuncTaskOptions", func() {
+		JustBeforeEach(func() {
+			cnerd = nerd.New(containerdClient, containerdContext, fifoDir, mp, nerd.WithoutRuncTaskOptions())
+			spec = generateSpec(containerdContext, containerdClient, containerID)
+		})
+
+		AfterEach(func() {
+			cnerd.Delete(testLogger, containerID)
+		})
+
+		It("still creates and starts the container", func() {
+			Expect(cnerd.Create(testLogger, containerID, spec, maximusUID, maximusGID, initProcessIO)).To(Succeed())
+			_, status, err := cnerd.State(testLogger, containerID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status).To(BeEquivalentTo(client.Running))
+		})
+	})
+
+	Describe("KillAll and ProcessCount", func() {
+		JustBeforeEach(func() {
+			spec = generateSpec(containerdContext, containerdClient, containerID)
+			Expect(cnerd.Create(testLogger, containerID, spec, maximusUID, maximusGID, initProcessIO)).To(Succeed())
+
+			_, err := cnerd.Exec(testLogger, containerID, processID, &specs.Process{Args: []string{"/bin/sleep", "300"}, Cwd: "/"}, processIO)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			cnerd.Delete(testLogger, containerID)
+		})
+
+		It("counts and kills every process of the container", func() {
+			Eventually(func() (int, error) { return cnerd.ProcessCount(testLogger, containerID) }).Should(Equal(2))
+
+			Expect(cnerd.KillAll(testLogger, containerID, syscall.SIGKILL)).To(Succeed())
+
+			proc, err := cnerd.GetProcess(testLogger, containerID, processID)
+			Expect(err).NotTo(HaveOccurred())
+			exitCode, err := proc.Wait()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exitCode).To(Equal(137))
+		})
+	})
+
+	Describe("Metrics and CreatedAt", func() {
+		JustBeforeEach(func() {
+			spec = generateSpec(containerdContext, containerdClient, containerID)
+			Expect(cnerd.Create(testLogger, containerID, spec, maximusUID, maximusGID, initProcessIO)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			cnerd.Delete(testLogger, containerID)
+		})
+
+		It("returns the cgroup v2 metrics of the task", func() {
+			if !cgrouputils.IsCgroup2UnifiedMode() {
+				Skip("cgroup v2 only")
+			}
+
+			metrics, err := cnerd.Metrics(testLogger, containerID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(metrics.GetPids().GetCurrent()).NotTo(BeZero())
+			Expect(metrics.GetMemory()).NotTo(BeNil())
+		})
+
+		It("returns the creation time of the container", func() {
+			createdAt, err := cnerd.CreatedAt(testLogger, containerID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(createdAt).To(BeTemporally("~", time.Now(), time.Minute))
 		})
 	})
 

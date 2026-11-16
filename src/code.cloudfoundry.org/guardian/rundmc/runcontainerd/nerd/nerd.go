@@ -16,6 +16,7 @@ import (
 	"code.cloudfoundry.org/guardian/metrics"
 	"code.cloudfoundry.org/guardian/rundmc/runcontainerd"
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/containerd/cgroups/v3/cgroup2/stats"
 	apievents "github.com/containerd/containerd/api/events"
 	v2types "github.com/containerd/containerd/api/types/runc/options"
 	"github.com/containerd/containerd/v2/client"
@@ -28,19 +29,35 @@ import (
 )
 
 type Nerd struct {
-	client    *client.Client
-	context   context.Context
-	ioFifoDir string
-	mp        *metrics.MetricsProvider
+	client          *client.Client
+	context         context.Context
+	ioFifoDir       string
+	mp              *metrics.MetricsProvider
+	runcTaskOptions bool
 }
 
-func New(client *client.Client, context context.Context, ioFifoDir string, mp *metrics.MetricsProvider) *Nerd {
-	return &Nerd{
-		client:    client,
-		context:   context,
-		ioFifoDir: ioFifoDir,
-		mp:        mp,
+type Option func(*Nerd)
+
+// WithoutRuncTaskOptions is for containerd runtimes other than runc, which
+// reject runc-typed task options.
+func WithoutRuncTaskOptions() Option {
+	return func(n *Nerd) {
+		n.runcTaskOptions = false
 	}
+}
+
+func New(client *client.Client, context context.Context, ioFifoDir string, mp *metrics.MetricsProvider, opts ...Option) *Nerd {
+	n := &Nerd{
+		client:          client,
+		context:         context,
+		ioFifoDir:       ioFifoDir,
+		mp:              mp,
+		runcTaskOptions: true,
+	}
+	for _, opt := range opts {
+		opt(n)
+	}
+	return n
 }
 
 func (n *Nerd) Create(log lager.Logger, containerID string, spec *specs.Spec, hostUID, hostGID uint32, pio func() (io.Reader, io.Writer, io.Writer)) error {
@@ -58,7 +75,11 @@ func (n *Nerd) Create(log lager.Logger, containerID string, spec *specs.Spec, ho
 	}
 
 	log.Debug("creating-task", lager.Data{"containerID": containerID})
-	task, err := container.NewTask(n.context, cio.NewCreator(withProcessIO(noTTYProcessIO(pio), n.ioFifoDir)), client.WithNoNewKeyring, WithUIDAndGID(hostUID, hostGID))
+	var taskOpts []client.NewTaskOpts
+	if n.runcTaskOptions {
+		taskOpts = append(taskOpts, client.WithNoNewKeyring, WithUIDAndGID(hostUID, hostGID))
+	}
+	task, err := container.NewTask(n.context, cio.NewCreator(withProcessIO(noTTYProcessIO(pio), n.ioFifoDir)), taskOpts...)
 	if err != nil {
 		return err
 	}
@@ -369,6 +390,71 @@ func (n *Nerd) OOMEvents(log lager.Logger) <-chan *apievents.TaskOOM {
 	}()
 
 	return oomEvents
+}
+
+func (n *Nerd) KillAll(log lager.Logger, containerID string, signal syscall.Signal) error {
+	_, task, err := n.loadContainerAndTask(log, containerID)
+	if err != nil {
+		return err
+	}
+
+	log.Debug("killing-all", lager.Data{"containerID": containerID, "signal": signal.String()})
+	if err := task.Kill(n.context, signal, client.WithKillAll); err != nil {
+		if errdefs.IsNotFound(err) || errdefs.IsFailedPrecondition(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (n *Nerd) ProcessCount(log lager.Logger, containerID string) (int, error) {
+	_, task, err := n.loadContainerAndTask(log, containerID)
+	if err != nil {
+		return 0, err
+	}
+
+	processes, err := task.Pids(n.context)
+	if err != nil {
+		return 0, err
+	}
+	return len(processes), nil
+}
+
+func (n *Nerd) Metrics(log lager.Logger, containerID string) (*stats.Metrics, error) {
+	_, task, err := n.loadContainerAndTask(log, containerID)
+	if err != nil {
+		return nil, err
+	}
+
+	metric, err := task.Metrics(n.context)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := typeurl.UnmarshalAny(metric.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	metrics, ok := data.(*stats.Metrics)
+	if !ok {
+		return nil, fmt.Errorf("unsupported task metrics type %T", data)
+	}
+	return metrics, nil
+}
+
+func (n *Nerd) CreatedAt(log lager.Logger, containerID string) (time.Time, error) {
+	container, err := n.loadContainer(log, containerID)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	info, err := container.Info(n.context, client.WithoutRefreshedMetadata)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return info.CreatedAt, nil
 }
 
 func (n *Nerd) Spec(log lager.Logger, containerID string) (*specs.Spec, error) {
