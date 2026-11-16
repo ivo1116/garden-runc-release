@@ -152,7 +152,7 @@ func (f *LinuxFactory) WireContainerd(processBuilder *processes.ProcBuilder, use
 
 	cgroupManager := runcontainerd.NewCgroupManager(containerdRuncRoot(), containerdNamespace)
 
-	containerdManager := runcontainerd.New(nerd, nerd, processBuilder, userLookupper, wireExecer(pidGetter), statser, f.config.Containerd.UseContainerdForProcesses, cgroupManager, f.WireMkdirer(), peaHandlesGetter, f.config.Containers.CleanupProcessDirsOnWait, nerdStopper)
+	containerdManager := runcontainerd.New(nerd, nerd, processBuilder, userLookupper, wireExecer(pidGetter), statser, f.config.Containerd.UseContainerdForProcesses, cgroupManager, f.WireMkdirer(), peaHandlesGetter, f.config.Containers.CleanupProcessDirsOnWait, nerdStopper, false)
 
 	peaRunner := runcontainerd.NewRunContainerPea(containerdManager, nerd, volumizer, f.config.Containers.CleanupProcessDirsOnWait)
 

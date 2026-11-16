@@ -297,6 +297,42 @@ var _ = Describe("PeaCreator", func() {
 			})
 		})
 
+		Context("when the runtime resolves users", func() {
+			BeforeEach(func() {
+				peaCreator.RuntimeResolvesUsers = true
+				builtProcess.User.Username = processSpec.User
+			})
+
+			It("passes numeric ids without a user name", func() {
+				_, _, user := processBuilder.BuildProcessArgsForCall(0)
+				Expect(user.Uid).To(Equal(4))
+				Expect(user.Gid).To(Equal(5))
+
+				_, _, actualBundle, _, _, _, _, _ := execRunner.RunPeaArgsForCall(0)
+				Expect(actualBundle.Spec.Process.User.Username).To(BeEmpty())
+			})
+
+			It("passes the requested working directory to the runtime", func() {
+				_, _, actualBundle, _, _, _, _, _ := execRunner.RunPeaArgsForCall(0)
+				Expect(actualBundle.Spec.Process.Cwd).To(Equal("/some/dir"))
+			})
+
+			Context("when the user is a name", func() {
+				BeforeEach(func() {
+					processSpec.User = "vcap"
+				})
+
+				It("builds the process as root and passes the name to the runtime", func() {
+					_, _, user := processBuilder.BuildProcessArgsForCall(0)
+					Expect(user.Uid).To(Equal(0))
+					Expect(user.Gid).To(Equal(0))
+
+					_, _, actualBundle, _, _, _, _, _ := execRunner.RunPeaArgsForCall(0)
+					Expect(actualBundle.Spec.Process.User.Username).To(Equal("vcap"))
+				})
+			})
+		})
+
 		Context("when limits are provided", func() {
 			BeforeEach(func() {
 				processSpec.OverrideContainerLimits = &garden.ProcessLimits{

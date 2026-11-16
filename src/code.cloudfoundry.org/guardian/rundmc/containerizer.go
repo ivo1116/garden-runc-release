@@ -32,6 +32,7 @@ import (
 //counterfeiter:generate . PeaUsernameResolver
 //counterfeiter:generate . RuntimeStopper
 //counterfeiter:generate . CPUCgrouper
+//counterfeiter:generate . Streamer
 
 type Depot interface {
 	Destroy(log lager.Logger, handle string) error
@@ -76,6 +77,11 @@ type NstarRunner interface {
 	StreamOut(log lager.Logger, pid int, path string, user string) (io.ReadCloser, error)
 }
 
+type Streamer interface {
+	StreamIn(log lager.Logger, handle string, spec garden.StreamInSpec) error
+	StreamOut(log lager.Logger, handle string, spec garden.StreamOutSpec) (io.ReadCloser, error)
+}
+
 type ProcessesStopper interface {
 	StopAll(log lager.Logger, cgroupName string, save []int, kill bool) error
 }
@@ -118,6 +124,8 @@ type Containerizer struct {
 	cpuEntitlementPerShare float64
 	runtimeStopper         RuntimeStopper
 	cpuCgrouper            CPUCgrouper
+	streamer               Streamer
+	runtimeResolvesUsers   bool
 }
 
 func New(
@@ -133,6 +141,8 @@ func New(
 	cpuEntitlementPerShare float64,
 	runtimeStopper RuntimeStopper,
 	cpuCgrouper CPUCgrouper,
+	streamer Streamer,
+	runtimeResolvesUsers bool,
 ) *Containerizer {
 	containerizer := &Containerizer{
 		depot:                  depot,
@@ -147,6 +157,8 @@ func New(
 		cpuEntitlementPerShare: cpuEntitlementPerShare,
 		runtimeStopper:         runtimeStopper,
 		cpuCgrouper:            cpuCgrouper,
+		streamer:               streamer,
+		runtimeResolvesUsers:   runtimeResolvesUsers,
 	}
 	return containerizer
 }
@@ -202,7 +214,7 @@ func (c *Containerizer) Run(log lager.Logger, handle string, spec garden.Process
 	defer log.Info("finished")
 
 	if isPea(spec) {
-		if shouldResolveUsername(spec.User) {
+		if !c.runtimeResolvesUsers && shouldResolveUsername(spec.User) {
 			resolvedUID, resolvedGID, err := c.peaUsernameResolver.ResolveUser(log, handle, spec.Image, spec.User)
 			if err != nil {
 				return nil, err
@@ -250,6 +262,14 @@ func (c *Containerizer) StreamIn(log lager.Logger, handle string, spec garden.St
 		_ = metrics.SendValue("StreamInDuration", float64(time.Since(startedAt).Nanoseconds()), "nanos")
 	}(time.Now())
 
+	if c.streamer != nil {
+		if err := c.streamer.StreamIn(log, handle, spec); err != nil {
+			log.Error("streamer-failed", err)
+			return fmt.Errorf("stream-in: %s", err)
+		}
+		return nil
+	}
+
 	state, err := c.runtime.State(log, handle)
 	if err != nil {
 		log.Error("check-pid-failed", err)
@@ -270,6 +290,15 @@ func (c *Containerizer) StreamOut(log lager.Logger, handle string, spec garden.S
 
 	log.Info("started")
 	defer log.Info("finished")
+
+	if c.streamer != nil {
+		stream, err := c.streamer.StreamOut(log, handle, spec)
+		if err != nil {
+			log.Error("streamer-failed", err)
+			return nil, fmt.Errorf("stream-out: %s", err)
+		}
+		return stream, nil
+	}
 
 	state, err := c.runtime.State(log, handle)
 	if err != nil {

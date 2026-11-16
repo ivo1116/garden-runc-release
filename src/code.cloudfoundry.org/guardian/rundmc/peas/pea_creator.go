@@ -68,6 +68,8 @@ type PeaCreator struct {
 	ProcessBuilder   runrunc.ProcessBuilder
 	ExecRunner       ExecRunner
 	PeaCleaner       gardener.PeaCleaner
+
+	RuntimeResolvesUsers bool
 }
 
 func (p *PeaCreator) CreatePea(log lager.Logger, processSpec garden.ProcessSpec, procIO garden.ProcessIO, sandboxHandle string) (_ garden.Process, theErr error) {
@@ -95,9 +97,13 @@ func (p *PeaCreator) CreatePea(log lager.Logger, processSpec garden.ProcessSpec,
 	if processSpec.Dir == "" {
 		processSpec.Dir = "/"
 	}
-	userUID, userGID, err := parseUser(processSpec.User)
-	if err != nil {
-		return errs("parse-user", err)
+	execUser, runtimeUsername := users.RuntimeUser(processSpec.User)
+	if !p.RuntimeResolvesUsers {
+		userUID, userGID, err := parseUser(processSpec.User)
+		if err != nil {
+			return errs("parse-user", err)
+		}
+		execUser = &users.ExecUser{Uid: userUID, Gid: userGID}
 	}
 
 	linuxNamespaces, err := p.linuxNamespaces(log, sandboxHandle, privileged)
@@ -152,7 +158,11 @@ func (p *PeaCreator) CreatePea(log lager.Logger, processSpec garden.ProcessSpec,
 		return errs("generating-bundle", multierror.Append(genErr, destroyErr))
 	}
 
-	preparedProcess := p.ProcessBuilder.BuildProcess(bndl, processSpec, &users.ExecUser{Uid: userUID, Gid: userGID})
+	preparedProcess := p.ProcessBuilder.BuildProcess(bndl, processSpec, execUser)
+	if p.RuntimeResolvesUsers {
+		preparedProcess.User.Username = runtimeUsername
+		preparedProcess.Cwd = processSpec.Dir
+	}
 	bndl = bndl.WithProcess(*preparedProcess)
 
 	extraCleanup := func() error {

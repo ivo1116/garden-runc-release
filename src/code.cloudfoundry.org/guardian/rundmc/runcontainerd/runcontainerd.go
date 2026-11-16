@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
+	"syscall"
 
 	"code.cloudfoundry.org/guardian/rundmc"
 
@@ -33,6 +35,8 @@ type ContainerManager interface {
 	Spec(log lager.Logger, containerID string) (*specs.Spec, error)
 	BundleIDs(filterLabels ...ContainerFilter) ([]string, error)
 	RemoveBundle(lager.Logger, string) error
+	KillAll(log lager.Logger, containerID string, signal syscall.Signal) error
+	ProcessCount(log lager.Logger, containerID string) (int, error)
 }
 
 //counterfeiter:generate . RuntimeStopper
@@ -91,6 +95,7 @@ type RunContainerd struct {
 	peaHandlesGetter          PeaHandlesGetter
 	cleanupProcessDirsOnWait  bool
 	runtimeStopper            RuntimeStopper
+	containerdRuntime         bool
 }
 
 func New(containerManager ContainerManager,
@@ -104,7 +109,8 @@ func New(containerManager ContainerManager,
 	mkdirer Mkdirer,
 	peaHandlesGetter PeaHandlesGetter,
 	cleanupProcessDirsOnWait bool,
-	runtimeStopper RuntimeStopper) *RunContainerd {
+	runtimeStopper RuntimeStopper,
+	containerdRuntime bool) *RunContainerd {
 	return &RunContainerd{
 		containerManager:          containerManager,
 		processManager:            processManager,
@@ -118,6 +124,7 @@ func New(containerManager ContainerManager,
 		peaHandlesGetter:          peaHandlesGetter,
 		cleanupProcessDirsOnWait:  cleanupProcessDirsOnWait,
 		runtimeStopper:            runtimeStopper,
+		containerdRuntime:         containerdRuntime,
 	}
 }
 
@@ -170,6 +177,47 @@ func (r *RunContainerd) Exec(log lager.Logger, containerID string, gardenProcess
 		return r.execer.ExecWithBndl(log, containerID, bundle, gardenProcessSpec, gardenIO)
 	}
 
+	var resolvedUser *users.ExecUser
+	var runtimeUsername string
+	if r.containerdRuntime {
+		resolvedUser, runtimeUsername = users.RuntimeUser(gardenProcessSpec.User)
+	} else {
+		resolvedUser, err = r.resolveUserAndCreateWorkDir(log, containerID, bundle, &gardenProcessSpec)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if gardenProcessSpec.ID == "" {
+		randomID, err := uuid.NewV4()
+		if err != nil {
+			return nil, err
+		}
+		gardenProcessSpec.ID = randomID.String()
+	}
+
+	processIO := func() (io.Reader, io.Writer, io.Writer, bool) {
+		return gardenIO.Stdin, gardenIO.Stdout, gardenIO.Stderr, gardenProcessSpec.TTY != nil
+	}
+
+	ociProcessSpec := r.processBuilder.BuildProcess(bundle, gardenProcessSpec, resolvedUser)
+	if r.containerdRuntime {
+		ociProcessSpec.User.Username = runtimeUsername
+		ociProcessSpec.Cwd = gardenProcessSpec.Dir
+	}
+
+	process, err := r.containerManager.Exec(log, containerID, gardenProcessSpec.ID, ociProcessSpec, processIO)
+	if err != nil {
+		if isNoSuchExecutable(err) || (r.containerdRuntime && strings.Contains(err.Error(), runtimeExecutableNotFound)) {
+			return nil, garden.ExecutableNotFoundError{Message: err.Error()}
+		}
+		return nil, err
+	}
+
+	return NewProcess(log, process, r.cleanupProcessDirsOnWait), nil
+}
+
+func (r *RunContainerd) resolveUserAndCreateWorkDir(log lager.Logger, containerID string, bundle goci.Bndl, gardenProcessSpec *garden.ProcessSpec) (*users.ExecUser, error) {
 	containerPid, err := r.containerManager.GetContainerPID(log, containerID)
 	if err != nil {
 		return nil, err
@@ -195,29 +243,10 @@ func (r *RunContainerd) Exec(log lager.Logger, containerID string, gardenProcess
 		return nil, err
 	}
 
-	if gardenProcessSpec.ID == "" {
-		randomID, err := uuid.NewV4()
-		if err != nil {
-			return nil, err
-		}
-		gardenProcessSpec.ID = randomID.String()
-	}
-
-	processIO := func() (io.Reader, io.Writer, io.Writer, bool) {
-		return gardenIO.Stdin, gardenIO.Stdout, gardenIO.Stderr, gardenProcessSpec.TTY != nil
-	}
-
-	ociProcessSpec := r.processBuilder.BuildProcess(bundle, gardenProcessSpec, resolvedUser)
-	process, err := r.containerManager.Exec(log, containerID, gardenProcessSpec.ID, ociProcessSpec, processIO)
-	if err != nil {
-		if isNoSuchExecutable(err) {
-			return nil, garden.ExecutableNotFoundError{Message: err.Error()}
-		}
-		return nil, err
-	}
-
-	return NewProcess(log, process, r.cleanupProcessDirsOnWait), nil
+	return resolvedUser, nil
 }
+
+const runtimeExecutableNotFound = "executable file not found"
 
 func isNoSuchExecutable(err error) bool {
 	runcError := `(?:starting container process caused|unable to start container process)`
@@ -337,4 +366,12 @@ func (r *RunContainerd) RemoveBundle(log lager.Logger, handle string) error {
 
 func (r *RunContainerd) Stop() error {
 	return r.runtimeStopper.Stop()
+}
+
+func (r *RunContainerd) KillAll(log lager.Logger, id string, signal syscall.Signal) error {
+	return r.containerManager.KillAll(log, id, signal)
+}
+
+func (r *RunContainerd) ProcessCount(log lager.Logger, id string) (int, error) {
+	return r.containerManager.ProcessCount(log, id)
 }

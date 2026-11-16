@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"code.cloudfoundry.org/guardian/rundmc"
 
@@ -59,7 +60,7 @@ var _ = Describe("Runcontainerd", func() {
 
 		processManager.GetProcessReturns(backingProcess, nil)
 
-		runContainerd = runcontainerd.New(containerManager, processManager, processBuilder, userLookupper, execer, statser, false, cgroupManager, mkdirer, nil, false, runtimeStopper)
+		runContainerd = runcontainerd.New(containerManager, processManager, processBuilder, userLookupper, execer, statser, false, cgroupManager, mkdirer, nil, false, runtimeStopper, false)
 	})
 
 	Describe("Create", func() {
@@ -168,7 +169,7 @@ var _ = Describe("Runcontainerd", func() {
 
 		Context("when using containerd for processes", func() {
 			BeforeEach(func() {
-				runContainerd = runcontainerd.New(containerManager, processManager, processBuilder, userLookupper, execer, statser, true, cgroupManager, mkdirer, nil, false, runtimeStopper)
+				runContainerd = runcontainerd.New(containerManager, processManager, processBuilder, userLookupper, execer, statser, true, cgroupManager, mkdirer, nil, false, runtimeStopper, false)
 			})
 
 			It("sets the container to use the memory hierarchy", func() {
@@ -371,7 +372,7 @@ var _ = Describe("Runcontainerd", func() {
 
 				containerManager.GetContainerPIDReturns(1234, nil)
 				containerManager.ExecReturns(nil, nil)
-				runContainerd = runcontainerd.New(containerManager, processManager, processBuilder, userLookupper, execer, statser, true, cgroupManager, mkdirer, nil, false, runtimeStopper)
+				runContainerd = runcontainerd.New(containerManager, processManager, processBuilder, userLookupper, execer, statser, true, cgroupManager, mkdirer, nil, false, runtimeStopper, false)
 			})
 
 			It("passes the logger through", func() {
@@ -537,6 +538,101 @@ var _ = Describe("Runcontainerd", func() {
 				})
 			})
 		})
+
+		Context("when a containerd runtime is configured", func() {
+			BeforeEach(func() {
+				processSpec.Dir = "/home/testuser/app"
+				processBuilder.BuildProcessReturns(&specs.Process{
+					Args: []string{"test-binary"},
+					Cwd:  "/",
+					User: specs.User{Username: "testuser"},
+				})
+				runContainerd = runcontainerd.New(containerManager, processManager, processBuilder, userLookupper, execer, statser, true, cgroupManager, mkdirer, nil, false, runtimeStopper, true)
+			})
+
+			It("does not use the execer", func() {
+				Expect(execer.ExecWithBndlCallCount()).To(Equal(0))
+				Expect(containerManager.ExecCallCount()).To(Equal(1))
+			})
+
+			It("does not resolve the user or create the working directory on the host", func() {
+				Expect(containerManager.GetContainerPIDCallCount()).To(Equal(0))
+				Expect(userLookupper.LookupCallCount()).To(Equal(0))
+				Expect(mkdirer.MkdirAsCallCount()).To(Equal(0))
+			})
+
+			It("builds the process as uid 0 and passes the user name to the runtime", func() {
+				_, _, user := processBuilder.BuildProcessArgsForCall(0)
+				Expect(user.Uid).To(Equal(0))
+				Expect(user.Gid).To(Equal(0))
+
+				_, _, _, actualProcessSpec, _ := containerManager.ExecArgsForCall(0)
+				Expect(actualProcessSpec.User.Username).To(Equal("testuser"))
+			})
+
+			It("passes the requested working directory unchanged", func() {
+				_, _, _, actualProcessSpec, _ := containerManager.ExecArgsForCall(0)
+				Expect(actualProcessSpec.Cwd).To(Equal("/home/testuser/app"))
+			})
+
+			Context("when no working directory is requested", func() {
+				BeforeEach(func() {
+					processSpec.Dir = ""
+				})
+
+				It("leaves it to the runtime", func() {
+					_, _, _, actualProcessSpec, _ := containerManager.ExecArgsForCall(0)
+					Expect(actualProcessSpec.Cwd).To(BeEmpty())
+				})
+			})
+
+			Context("when the user is a numeric uid:gid", func() {
+				BeforeEach(func() {
+					processSpec.User = "1000:1001"
+				})
+
+				It("uses the ids and no user name", func() {
+					_, _, user := processBuilder.BuildProcessArgsForCall(0)
+					Expect(user.Uid).To(Equal(1000))
+					Expect(user.Gid).To(Equal(1001))
+
+					_, _, _, actualProcessSpec, _ := containerManager.ExecArgsForCall(0)
+					Expect(actualProcessSpec.User.Username).To(BeEmpty())
+				})
+			})
+
+			Context("when the runtime reports that the executable was not found", func() {
+				BeforeEach(func() {
+					containerManager.ExecReturns(nil, errors.New("failed to exec: potato: executable file not found"))
+				})
+
+				It("returns a garden.ExecutableNotFoundError error", func() {
+					Expect(execErr).To(BeAssignableToTypeOf(garden.ExecutableNotFoundError{}))
+				})
+			})
+
+			Context("when the runtime returns another error", func() {
+				BeforeEach(func() {
+					containerManager.ExecReturns(nil, errors.New("error-execing"))
+				})
+
+				It("returns the error", func() {
+					Expect(execErr).To(MatchError("error-execing"))
+				})
+			})
+		})
+
+		Context("when no containerd runtime is configured and the error only says executable file not found", func() {
+			BeforeEach(func() {
+				containerManager.ExecReturns(nil, errors.New("failed to exec: potato: executable file not found"))
+				runContainerd = runcontainerd.New(containerManager, processManager, processBuilder, userLookupper, execer, statser, true, cgroupManager, mkdirer, nil, false, runtimeStopper, false)
+				userLookupper.LookupReturns(&users.ExecUser{}, nil)
+			})
+
+			It("returns the error unchanged", func() {
+				Expect(execErr).To(MatchError("failed to exec: potato: executable file not found"))
+			})
+		})
 	})
 
 	Describe("Attach", func() {
@@ -582,7 +678,7 @@ var _ = Describe("Runcontainerd", func() {
 
 		Context("when using containerd for processes", func() {
 			BeforeEach(func() {
-				runContainerd = runcontainerd.New(containerManager, processManager, processBuilder, userLookupper, execer, statser, true, cgroupManager, mkdirer, nil, false, runtimeStopper)
+				runContainerd = runcontainerd.New(containerManager, processManager, processBuilder, userLookupper, execer, statser, true, cgroupManager, mkdirer, nil, false, runtimeStopper, false)
 			})
 
 			It("returns a process wired to the process manager", func() {
@@ -841,7 +937,7 @@ var _ = Describe("Runcontainerd", func() {
 			BeforeEach(func() {
 				peaHandlesGetter = new(runcontainerdfakes.FakePeaHandlesGetter)
 				peaHandlesGetter.ContainerPeaHandlesReturns([]string{"apple", "apple2"}, nil)
-				runContainerd = runcontainerd.New(containerManager, processManager, processBuilder, userLookupper, execer, statser, false, cgroupManager, mkdirer, peaHandlesGetter, false, runtimeStopper)
+				runContainerd = runcontainerd.New(containerManager, processManager, processBuilder, userLookupper, execer, statser, false, cgroupManager, mkdirer, peaHandlesGetter, false, runtimeStopper, false)
 			})
 
 			It("returns the list of bundleIDs", func() {
@@ -885,6 +981,28 @@ var _ = Describe("Runcontainerd", func() {
 			It("returns the error", func() {
 				Expect(stopErr).To(MatchError("stop-err"))
 			})
+		})
+	})
+
+	Describe("KillAll", func() {
+		It("delegates to the container manager", func() {
+			containerManager.KillAllReturns(errors.New("kill-err"))
+			Expect(runContainerd.KillAll(logger, "some-id", syscall.SIGTERM)).To(MatchError("kill-err"))
+
+			Expect(containerManager.KillAllCallCount()).To(Equal(1))
+			_, actualID, actualSignal := containerManager.KillAllArgsForCall(0)
+			Expect(actualID).To(Equal("some-id"))
+			Expect(actualSignal).To(Equal(syscall.SIGTERM))
+		})
+	})
+
+	Describe("ProcessCount", func() {
+		It("delegates to the container manager", func() {
+			containerManager.ProcessCountReturns(3, nil)
+			Expect(runContainerd.ProcessCount(logger, "some-id")).To(Equal(3))
+
+			_, actualID := containerManager.ProcessCountArgsForCall(0)
+			Expect(actualID).To(Equal("some-id"))
 		})
 	})
 })

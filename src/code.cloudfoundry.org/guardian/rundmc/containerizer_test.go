@@ -73,6 +73,8 @@ var _ = Describe("Rundmc", func() {
 			0,
 			fakeRuntimeStopper,
 			fakeCPUCgrouper,
+			nil,
+			false,
 		)
 	})
 
@@ -251,6 +253,21 @@ var _ = Describe("Rundmc", func() {
 						_, createdPeaProcessSpec, _, _ := fakePeaCreator.CreatePeaArgsForCall(0)
 						Expect(createdPeaProcessSpec.User).To(Equal("1:2"))
 					})
+
+					Context("when the runtime resolves users", func() {
+						BeforeEach(func() {
+							containerizer = rundmc.New(fakeDepot, fakeBundleGenerator, fakeOCIRuntime, fakeNstarRunner, fakeProcessesStopper, fakeEventStore, fakeStateStore, fakePeaCreator, fakePeaUsernameResolver, 0, fakeRuntimeStopper, fakeCPUCgrouper, nil, true)
+						})
+
+						It("passes the username to the pea creator unresolved", func() {
+							_, err := containerizer.Run(logger, "some-handle", processSpec, pio)
+							Expect(err).NotTo(HaveOccurred())
+
+							Expect(fakePeaUsernameResolver.ResolveUserCallCount()).To(Equal(0))
+							_, createdPeaProcessSpec, _, _ := fakePeaCreator.CreatePeaArgsForCall(0)
+							Expect(createdPeaProcessSpec.User).To(Equal("foobar"))
+						})
+					})
 				})
 			})
 		})
@@ -297,6 +314,32 @@ var _ = Describe("Rundmc", func() {
 			fakeNstarRunner.StreamInReturns(errors.New("failed"))
 			Expect(containerizer.StreamIn(logger, "some-handle", garden.StreamInSpec{})).To(MatchError("stream-in: nstar: failed"))
 		})
+
+		Context("when a streamer is configured", func() {
+			var fakeStreamer *fakes.FakeStreamer
+
+			BeforeEach(func() {
+				fakeStreamer = new(fakes.FakeStreamer)
+				containerizer = rundmc.New(fakeDepot, fakeBundleGenerator, fakeOCIRuntime, fakeNstarRunner, fakeProcessesStopper, fakeEventStore, fakeStateStore, fakePeaCreator, fakePeaUsernameResolver, 0, fakeRuntimeStopper, fakeCPUCgrouper, fakeStreamer, true)
+			})
+
+			It("uses the streamer instead of nstar", func() {
+				spec := garden.StreamInSpec{Path: "some-path", User: "some-user", TarStream: gbytes.NewBuffer()}
+				Expect(containerizer.StreamIn(logger, "some-handle", spec)).To(Succeed())
+
+				Expect(fakeStreamer.StreamInCallCount()).To(Equal(1))
+				_, handle, actualSpec := fakeStreamer.StreamInArgsForCall(0)
+				Expect(handle).To(Equal("some-handle"))
+				Expect(actualSpec).To(Equal(spec))
+				Expect(fakeNstarRunner.StreamInCallCount()).To(Equal(0))
+				Expect(fakeOCIRuntime.StateCallCount()).To(Equal(0))
+			})
+
+			It("returns the error if the streamer fails", func() {
+				fakeStreamer.StreamInReturns(errors.New("failed"))
+				Expect(containerizer.StreamIn(logger, "some-handle", garden.StreamInSpec{})).To(MatchError("stream-in: failed"))
+			})
+		})
 	})
 
 	Describe("StreamOut", func() {
@@ -335,6 +378,38 @@ var _ = Describe("Rundmc", func() {
 
 			Expect(tarStream).To(BeNil())
 			Expect(err).To(MatchError("stream-out: nstar: failed"))
+		})
+
+		Context("when a streamer is configured", func() {
+			var fakeStreamer *fakes.FakeStreamer
+
+			BeforeEach(func() {
+				fakeStreamer = new(fakes.FakeStreamer)
+				containerizer = rundmc.New(fakeDepot, fakeBundleGenerator, fakeOCIRuntime, fakeNstarRunner, fakeProcessesStopper, fakeEventStore, fakeStateStore, fakePeaCreator, fakePeaUsernameResolver, 0, fakeRuntimeStopper, fakeCPUCgrouper, fakeStreamer, true)
+			})
+
+			It("uses the streamer instead of nstar", func() {
+				fakeStreamer.StreamOutReturns(os.Stdin, nil)
+				spec := garden.StreamOutSpec{Path: "some-path", User: "some-user"}
+
+				tarStream, err := containerizer.StreamOut(logger, "some-handle", spec)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tarStream).To(Equal(os.Stdin))
+
+				_, handle, actualSpec := fakeStreamer.StreamOutArgsForCall(0)
+				Expect(handle).To(Equal("some-handle"))
+				Expect(actualSpec).To(Equal(spec))
+				Expect(fakeNstarRunner.StreamOutCallCount()).To(Equal(0))
+				Expect(fakeOCIRuntime.StateCallCount()).To(Equal(0))
+			})
+
+			It("returns the error if the streamer fails", func() {
+				fakeStreamer.StreamOutReturns(nil, errors.New("failed"))
+				tarStream, err := containerizer.StreamOut(logger, "some-handle", garden.StreamOutSpec{})
+
+				Expect(tarStream).To(BeNil())
+				Expect(err).To(MatchError("stream-out: failed"))
+			})
 		})
 	})
 
@@ -664,6 +739,8 @@ var _ = Describe("Rundmc", func() {
 					entitlementPerSharePercent,
 					fakeRuntimeStopper,
 					fakeCPUCgrouper,
+					nil,
+					false,
 				)
 			})
 
