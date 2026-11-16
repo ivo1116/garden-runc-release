@@ -196,6 +196,8 @@ type CommonCommand struct {
 	Containerd struct {
 		Socket                    string `long:"containerd-socket" description:"Path to a containerd socket."`
 		UseContainerdForProcesses bool   `long:"use-containerd-for-processes" description:"Use containerd to run processes in containers."`
+		Runtime                   string `long:"containerd-runtime" description:"Name or absolute shim path of a non-runc containerd runtime. Implies --use-containerd-for-processes."`
+		RuntimeTarPath            string `long:"containerd-runtime-tar-path" default:"/.fc/bin/tar" description:"Path of the tar binary inside containers, used for streaming files when --containerd-runtime is set."`
 	} `group:"Containerd"`
 
 	CPUThrottling struct {
@@ -246,6 +248,10 @@ func (cmd *CommonCommand) createGardener(wiring *commandWiring) *gardener.Garden
 }
 
 func (cmd *CommonCommand) createWiring(logger lager.Logger, metricsProvider *metrics.MetricsProvider) (*commandWiring, error) {
+	if err := cmd.ValidateContainerdRuntime(); err != nil {
+		return nil, err
+	}
+
 	factory := cmd.NewGardenFactory()
 
 	propManager, err := cmd.loadProperties(logger, cmd.Containers.PropertiesPath)
@@ -322,7 +328,7 @@ func (cmd *CommonCommand) createWiring(logger lager.Logger, metricsProvider *met
 }
 
 func (cmd *CommonCommand) wirePeaCleaner(factory GardenFactory, volumizer gardener.Volumizer, runtime rundmc.OCIRuntime, pidGetter peas.ProcessPidGetter) gardener.PeaCleaner {
-	if cmd.Containerd.UseContainerdForProcesses {
+	if cmd.useContainerdForProcesses() {
 		nerdDeleter := runcontainerd.NewDeleter(runtime)
 		return peas.NewPeaCleaner(deleter.NewDeleter(runtime, nerdDeleter), volumizer, runtime, pidGetter)
 	}
@@ -611,6 +617,8 @@ func (cmd *CommonCommand) wireContainerizer(
 	var peaCreator *peas.PeaCreator
 	var privilegeChecker peas.PrivilegedGetter
 	var runtimeStopper rundmc.RuntimeStopper
+	var streamer rundmc.Streamer
+	var processesStopper rundmc.ProcessesStopper = stopper.New(stopper.NewRuncStateCgroupPathResolver(runcRoot), nil, retrier.New(retrier.ConstantBackoff(10, 1*time.Second), nil))
 
 	userLookupper := users.LookupFunc(users.LookupUser)
 
@@ -639,7 +647,7 @@ func (cmd *CommonCommand) wireContainerizer(
 		var peaBundleLoader peas.BundleLoader
 		var peaHandlesGetter runcontainerd.PeaHandlesGetter
 
-		if !cmd.Containerd.UseContainerdForProcesses {
+		if !cmd.useContainerdForProcesses() {
 			peaHandlesGetter = bundleManager
 		}
 
@@ -654,9 +662,14 @@ func (cmd *CommonCommand) wireContainerizer(
 		containersPidGetter = nerdPidGetter
 		runtimeStopper = runContainerd
 
-		if cmd.Containerd.UseContainerdForProcesses {
+		if cmd.useContainerdForProcesses() {
 			peaPidGetter = nerdPidGetter
 			peasExecRunner = peaRunner
+		}
+
+		if cmd.useContainerdRuntime() {
+			streamer = rundmc.NewExecStreamer(runContainerd, cmd.Containerd.RuntimeTarPath)
+			processesStopper = stopper.NewTaskStopper(runContainerd, retrier.New(retrier.ConstantBackoff(10, 1*time.Second), nil))
 		}
 
 	} else {
@@ -690,6 +703,8 @@ func (cmd *CommonCommand) wireContainerizer(
 		BundleSaver:      bundleSaver,
 		ExecRunner:       peasExecRunner,
 		PeaCleaner:       peaCleaner,
+
+		RuntimeResolvesUsers: cmd.useContainerdRuntime(),
 	}
 
 	peaUsernameResolver := &peas.PeaUsernameResolver{
@@ -700,14 +715,13 @@ func (cmd *CommonCommand) wireContainerizer(
 	}
 
 	nstar := rundmc.NewNstarRunner(cmd.Bin.NSTar.Path(), cmd.Bin.Tar.Path(), cmdRunner)
-	processesStopper := stopper.New(stopper.NewRuncStateCgroupPathResolver(runcRoot), nil, retrier.New(retrier.ConstantBackoff(10, 1*time.Second), nil))
 
 	cpuCgrouper, err := factory.WireCPUCgrouper()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return rundmc.New(depot, template, ociRuntime, nstar, processesStopper, eventStore, stateStore, peaCreator, peaUsernameResolver, cpuEntitlementPerShare, runtimeStopper, cpuCgrouper, nil, false), peaCleaner, nil
+	return rundmc.New(depot, template, ociRuntime, nstar, processesStopper, eventStore, stateStore, peaCreator, peaUsernameResolver, cpuEntitlementPerShare, runtimeStopper, cpuCgrouper, streamer, cmd.useContainerdRuntime()), peaCleaner, nil
 }
 
 func (cmd *CommonCommand) useContainerd() bool {

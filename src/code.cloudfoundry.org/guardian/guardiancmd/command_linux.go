@@ -140,19 +140,30 @@ func (f *LinuxFactory) WireResolvConfigurer() kawasaki.DnsResolvConfigurer {
 }
 
 func (f *LinuxFactory) WireContainerd(processBuilder *processes.ProcBuilder, userLookupper users.UserLookupper, wireExecer func(pidGetter runrunc.PidGetter) *runrunc.Execer, statser runcontainerd.Statser, log lager.Logger, volumizer peas.Volumizer, peaHandlesGetter runcontainerd.PeaHandlesGetter, metricsProvider *metrics.MetricsProvider) (*runcontainerd.RunContainerd, *runcontainerd.RunContainerPea, *runcontainerd.PidGetter, *privchecker.PrivilegeChecker, peas.BundleLoader, error) {
-	containerdClient, err := client.New(f.config.Containerd.Socket, client.WithDefaultRuntime(plugins.RuntimeRuncV2))
+	runtime := plugins.RuntimeRuncV2
+	var nerdOpts []nerdpkg.Option
+	if f.config.useContainerdRuntime() {
+		runtime = f.config.Containerd.Runtime
+		nerdOpts = append(nerdOpts, nerdpkg.WithoutRuncTaskOptions())
+	}
+
+	containerdClient, err := client.New(f.config.Containerd.Socket, client.WithDefaultRuntime(runtime))
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
 	ctx := namespaces.WithNamespace(context.Background(), containerdNamespace)
 	ctx = leases.WithLease(ctx, "lease-is-off")
-	nerd := nerdpkg.New(containerdClient, ctx, filepath.Join(containerdRuncRoot(), "fifo"), metricsProvider)
+	nerd := nerdpkg.New(containerdClient, ctx, filepath.Join(containerdRuncRoot(), "fifo"), metricsProvider, nerdOpts...)
 	nerdStopper := nerdpkg.NewNerdStopper(containerdClient)
 	pidGetter := &runcontainerd.PidGetter{Nerd: nerd}
 
 	cgroupManager := runcontainerd.NewCgroupManager(containerdRuncRoot(), containerdNamespace)
+	if f.config.useContainerdRuntime() {
+		cgroupManager = runcontainerd.NewRuntimeOwnedCgroupManager()
+		statser = runcontainerd.NewTaskStatser(nerd)
+	}
 
-	containerdManager := runcontainerd.New(nerd, nerd, processBuilder, userLookupper, wireExecer(pidGetter), statser, f.config.Containerd.UseContainerdForProcesses, cgroupManager, f.WireMkdirer(), peaHandlesGetter, f.config.Containers.CleanupProcessDirsOnWait, nerdStopper, false)
+	containerdManager := runcontainerd.New(nerd, nerd, processBuilder, userLookupper, wireExecer(pidGetter), statser, f.config.useContainerdForProcesses(), cgroupManager, f.WireMkdirer(), peaHandlesGetter, f.config.Containers.CleanupProcessDirsOnWait, nerdStopper, f.config.useContainerdRuntime())
 
 	peaRunner := runcontainerd.NewRunContainerPea(containerdManager, nerd, volumizer, f.config.Containers.CleanupProcessDirsOnWait)
 
