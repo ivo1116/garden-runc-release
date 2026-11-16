@@ -107,6 +107,7 @@ files:
   - code.cloudfoundry.org/guardian/vendor/github.com/cloudfoundry/gosigar/sys/windows/*.go # gosub
   - code.cloudfoundry.org/guardian/vendor/github.com/cloudfoundry/sonde-go/events/*.go # gosub
   - code.cloudfoundry.org/guardian/vendor/github.com/containerd/console/*.go # gosub
+  - code.cloudfoundry.org/guardian/vendor/github.com/containerd/cgroups/v3/cgroup2/stats/*.go # gosub
   - code.cloudfoundry.org/guardian/vendor/github.com/containerd/containerd/api/events/*.go # gosub
   - code.cloudfoundry.org/guardian/vendor/github.com/containerd/containerd/api/runtime/sandbox/v1/*.go # gosub
   - code.cloudfoundry.org/guardian/vendor/github.com/containerd/containerd/api/services/containers/v1/*.go # gosub
