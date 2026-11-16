@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 
+	"code.cloudfoundry.org/guardian/rundmc/goci"
 	"code.cloudfoundry.org/guardian/rundmc/runcontainerd"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
 
 var _ = Describe("CgroupManager", func() {
@@ -88,3 +90,26 @@ var _ = Describe("CgroupManager", func() {
 		})
 	})
 })
+
+var _ = Describe("RuntimeOwnedCgroupManager", func() {
+	var cgroupManager runcontainerd.CgroupManager
+
+	BeforeEach(func() {
+		cgroupManager = runcontainerd.NewRuntimeOwnedCgroupManager()
+	})
+
+	It("leaves the bundle and the cgroups alone", func() {
+		bundle := goci.Bundle().WithCGroupPath("/garden/some-handle").WithMemoryLimit(specs.LinuxMemory{Limit: int64ptr(1024)})
+		bundle.Spec.Annotations = map[string]string{"container-type": "garden-init"}
+		original := bundle.Spec
+
+		Expect(cgroupManager.SetUnifiedResources(bundle)).To(Succeed())
+		cgroupManager.AddCgroupBindMount(&bundle)
+		Expect(bundle.Spec).To(Equal(original))
+		Expect(cgroupManager.SetUseMemoryHierarchy("some-handle")).To(Succeed())
+	})
+})
+
+func int64ptr(i int64) *int64 {
+	return &i
+}

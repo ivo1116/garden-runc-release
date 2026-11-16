@@ -36,6 +36,20 @@ func NewCgroupManager(runcRoot, namespace string) CgroupManager {
 	}
 }
 
+type runtimeOwnedCgroupManager struct{}
+
+// NewRuntimeOwnedCgroupManager is for runtimes that create and configure
+// the container cgroup themselves.
+func NewRuntimeOwnedCgroupManager() CgroupManager {
+	return runtimeOwnedCgroupManager{}
+}
+
+func (runtimeOwnedCgroupManager) SetUseMemoryHierarchy(string) error { return nil }
+
+func (runtimeOwnedCgroupManager) SetUnifiedResources(goci.Bndl) error { return nil }
+
+func (runtimeOwnedCgroupManager) AddCgroupBindMount(*goci.Bndl) {}
+
 func (m cgroupManager) SetUseMemoryHierarchy(handle string) error {
 	statePath := filepath.Join(m.runcRoot, m.namespace, handle, "state.json")
 	stateFile, err := os.Open(statePath)
