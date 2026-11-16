@@ -287,6 +287,24 @@ describe 'garden' do
           expect(rendered_template['server']['enable-container-network-metrics']).to eql(true)
         end
       end
+
+      it 'does not set a containerd runtime' do
+        expect(rendered_template['server']['containerd-runtime']).to eql(nil)
+      end
+
+      context 'when a containerd runtime is set' do
+        let(:properties) do
+          {
+            'garden' => {
+              'containerd_runtime' => '/var/vcap/packages/some-runtime/bin/containerd-shim-some-v2'
+            }
+          }
+        end
+
+        it 'renders the containerd runtime' do
+          expect(rendered_template['server']['containerd-runtime']).to eql('/var/vcap/packages/some-runtime/bin/containerd-shim-some-v2')
+        end
+      end
     end
 
     context 'with a listen address' do

@@ -253,3 +253,6 @@ parse_ip(p('garden.network_pool'), 'garden.network_pool')
 ; containerd
   containerd-socket = /var/vcap/sys/run/containerd/containerd.sock
 <% end -%>
+<% unless p("garden.containerd_runtime").empty? -%>
+  containerd-runtime = <%= p("garden.containerd_runtime") %>
+<% end -%>

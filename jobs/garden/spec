@@ -253,6 +253,10 @@ properties:
     description: "Use containerd for container lifecycle management. NOTE: cannot be used in combination with bpm"
     default: true
 
+  garden.containerd_runtime:
+    description: "Name or absolute shim path of a containerd runtime to use instead of runc. Requires containerd_mode. Cannot be combined with cpu_throttling."
+    default: ""
+
   garden.tcp_keepalive_time:
     description: Sets the `net.ipv4.tcp_keepalive_time` kernel parameter in containers. If not specified, the value from the linux init_net namespace is used.
 
