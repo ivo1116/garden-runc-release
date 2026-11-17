@@ -172,6 +172,10 @@ properties:
   garden.image_plugin:
     description: "Path to an optional image plugin binary"
 
+  garden.image_plugin_uses_grootfs_stores:
+    description: "Set when garden.image_plugin wraps grootfs and uses the stores configured by this job. Garden then initialises the grootfs stores on start, as it does without an image plugin."
+    default: false
+
   garden.image_plugin_extra_args:
     description: "An array of additional arguments which will be passed to the image plugin binary"
     default: []

@@ -333,6 +333,44 @@ describe 'garden' do
     end
   end
 
+  context 'bin/garden_start' do
+    let(:template) { job.template('bin/garden_start') }
+    let(:rendered_template) { template.render(properties) }
+
+    it 'initialises the grootfs stores' do
+      expect(rendered_template).to include('overlay-xfs-setup')
+    end
+
+    context 'when an image plugin is set' do
+      let(:properties) do
+        {
+          'garden' => {
+            'image_plugin' => '/var/vcap/packages/some-plugin/bin/some-plugin'
+          }
+        }
+      end
+
+      it 'does not initialise the grootfs stores' do
+        expect(rendered_template).not_to include('overlay-xfs-setup')
+      end
+
+      context 'and the image plugin uses the grootfs stores' do
+        let(:properties) do
+          {
+            'garden' => {
+              'image_plugin' => '/var/vcap/packages/some-plugin/bin/some-plugin',
+              'image_plugin_uses_grootfs_stores' => true
+            }
+          }
+        end
+
+        it 'initialises the grootfs stores' do
+          expect(rendered_template).to include('overlay-xfs-setup')
+        end
+      end
+    end
+  end
+
   context 'bin/grootfs-utils' do
     let(:template) { job.template('bin/grootfs-utils') }
 

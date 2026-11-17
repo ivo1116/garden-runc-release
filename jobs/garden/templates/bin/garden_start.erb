@@ -30,7 +30,7 @@ log "preparing system: done"
 rm -f "$RUNTIME_BIN_DIR"/init
 cp /var/vcap/packages/guardian/bin/init "$RUNTIME_BIN_DIR"/init
 
-<% if p("garden.image_plugin", "") == "" %>
+<% if p("garden.image_plugin", "") == "" || p("garden.image_plugin_uses_grootfs_stores") %>
 log "configuring xfs"
 ${BASE_PATH}/overlay-xfs-setup
 log "configuring xfs: done"
